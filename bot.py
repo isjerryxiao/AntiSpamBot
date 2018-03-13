@@ -68,8 +68,7 @@ def handle_inline_result(bot, update):
     for chat_member in bot.get_chat_administrators(chat_id):
         admin_ids.append(chat_member.user.id)
     if user.id not in admin_ids:
-        bot.sendMessage(chat_id=chat_id,
-            text="{0} 你不是管理员。".format(display_username(user)), reply_to_message_id=message_id)
+        logger.info("A non-admin user {0} (id: {1}) clicked the button from the group {2}".format(display_username(user), user.id, chat_id))
         return
     try:
         bot_id = re_match(r'unban ([0-9]+)', data).group(1)
