@@ -69,6 +69,7 @@ def handle_inline_result(bot, update):
         admin_ids.append(chat_member.user.id)
     if user.id not in admin_ids:
         logger.info("A non-admin user {0} (id: {1}) clicked the button from the group {2}".format(display_username(user), user.id, chat_id))
+        bot.answer_callback_query(callback_query_id=update.callback_query.id, text="你没有权限执行此操作。")
         return
     try:
         bot_id = re_match(r'unban ([0-9]+)', data).group(1)
