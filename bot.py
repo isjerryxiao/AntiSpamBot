@@ -98,6 +98,13 @@ def handle_inline_result(bot, update):
     unban_ids = args[1:]
     unban_user(bot, unban_ids, update)
 
+def at_admins(bot, update):
+    chat_id = update.message.chat.id
+    admins = list()
+    for chat_member in bot.get_chat_administrators(chat_id):
+        if chat_member.user.username != bot.username:
+            admins.append(chat_member.user.username)
+    update.message.reply_text(" ".join("@"+a for a in admins))
 
 def status_update(bot, update):
     chat_id = update.message.chat_id
@@ -116,6 +123,8 @@ def status_update(bot, update):
 
 updater.dispatcher.add_handler(CommandHandler('start', start))
 updater.dispatcher.add_handler(CommandHandler('source', source))
+updater.dispatcher.add_handler(CommandHandler('admins', at_admins))
+updater.dispatcher.add_handler(CommandHandler('admin', at_admins))
 updater.dispatcher.add_handler(CallbackQueryHandler(handle_inline_result, pattern=r'unban'))
 updater.dispatcher.add_handler(MessageHandler(Filters.status_update, status_update))
 updater.start_polling()
