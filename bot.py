@@ -42,16 +42,16 @@ def display_username(user, atuser=True, shorten=False):
     return name
 
 
-def ban_user(bot, chat_id, user, euser):
+def ban_user(bot, chat_id, user, invite_user):
     try:
         if bot.restrict_chat_member(chat_id=chat_id, user_id=user.id, until_date=datetime.utcnow()+timedelta(days=367)) and \
-                    bot.restrict_chat_member(chat_id=chat_id, user_id=euser.id, until_date=datetime.utcnow()+timedelta(days=367)):
-            button = InlineKeyboardButton(text="解除封禁", callback_data="unban {0} {1}".format(user.id, euser.id))
+                    bot.restrict_chat_member(chat_id=chat_id, user_id=invite_user.id, until_date=datetime.utcnow()+timedelta(days=367)):
+            button = InlineKeyboardButton(text="解除封禁", callback_data="unban {0} {1}".format(user.id, invite_user.id))
             bot.send_message(chat_id=chat_id,
                     text="发现新加入的bot: {0} ，以及拉入bot的用户: {1} ，已经将其全部封禁。"
-                            "如需解封请管理员点击下面的按钮。".format(display_username(user), display_username(euser)),
+                            "如需解封请管理员点击下面的按钮。".format(display_username(user), display_username(invite_user)),
                             reply_markup=InlineKeyboardMarkup([[button]]))
-            logger.info("Banned {0} and {1} in the group {2}".format(user.id, euser.id, chat_id))
+            logger.info("Banned {0} and {1} in the group {2}".format(user.id, invite_user.id, chat_id))
         else:
             raise TelegramError
     except TelegramError:
@@ -108,12 +108,16 @@ def at_admins(bot, update):
         last_at_admins = last_at_admins_dict[chat_id]
     job_queue = updater.job_queue
     if time() - last_at_admins < at_admins_ratelimit:
-        notice = update.message.reply_text("请再等待 %s 秒" % int(at_admins_ratelimit - (time() - last_at_admins)))
+        notice = update.message.reply_text("请再等待 {0} 秒".format(at_admins_ratelimit - (time() - last_at_admins)))
         def delete_notice(bot, job):
-            update.message.delete()
+            try:
+                update.message.delete()
+            except TelegramError:
+                logger.info("Unable to delete at_admin spam message {0} from {1}".format(update.message.message_id, update.message.from_user.id))
             notice.delete()
         job_queue.run_once(delete_notice, 5)
         job_queue.start()
+        logger.info("Deleted at_admin spam messages {0} and {1} from {2}".format(update.message.message_id, notice.message_id, update.message.from_user.id))
         return
     admins = list()
     for chat_member in bot.get_chat_administrators(chat_id):
@@ -121,18 +125,19 @@ def at_admins(bot, update):
             admins.append(chat_member.user.username)
     update.message.reply_text(" ".join("@"+a for a in admins))
     last_at_admins_dict[chat_id] = time()
+    logger.info("At_admin sent from {0} {1}".format(update.message.from_user.id, chat_id))
 
 def status_update(bot, update):
     chat_id = update.message.chat_id
     if update.message.new_chat_members:
         users = update.message.new_chat_members
-        euser = update.effective_user
+        invite_user = update.message.from_user
         for user in users:
             if user.id == bot.id:
                 logger.info("Myself joined the group {0}".format(chat_id))
             else:
                 if user.is_bot:
-                    ban_user(bot, chat_id, user, euser)
+                    ban_user(bot, chat_id, user, invite_user)
                 else:
                     logger.debug("{0} joined the group {1}".format(user.id, chat_id))
 
