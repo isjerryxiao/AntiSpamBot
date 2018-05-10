@@ -3,7 +3,6 @@
 
 token = "token_here"
 import logging
-from re import match as re_match
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
 from datetime import datetime, timedelta
