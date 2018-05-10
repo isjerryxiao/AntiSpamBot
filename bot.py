@@ -6,6 +6,7 @@ import logging
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
 from datetime import datetime, timedelta
+from time import time
 from telegram.error import TelegramError
 
 logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -13,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 updater = Updater(token)
 
+at_admins_ratelimit = 10*60
+last_at_admins_dict = dict()
 
 def start(bot, update):
     update.message.reply_text('你好{}，这个机器人会自动封禁新加入的bot以及拉入bot的用户，并等待管理员的审核。要让其正常工作，请将这个机器人添加进一个群组，设为管理员并打开封禁权限。'.format(update.message.from_user.first_name))
@@ -98,12 +101,26 @@ def handle_inline_result(bot, update):
     unban_user(bot, unban_ids, update)
 
 def at_admins(bot, update):
+    global last_at_admins_dict, at_admins_ratelimit
     chat_id = update.message.chat.id
+    last_at_admins = 0
+    if chat_id in last_at_admins_dict:
+        last_at_admins = last_at_admins_dict[chat_id]
+    job_queue = updater.job_queue
+    if time() - last_at_admins < at_admins_ratelimit:
+        notice = update.message.reply_text("请再等待 %s 秒" % int(at_admins_ratelimit - (time() - last_at_admins)))
+        def delete_notice(bot, job):
+            update.message.delete()
+            notice.delete()
+        job_queue.run_once(delete_notice, 5)
+        job_queue.start()
+        return
     admins = list()
     for chat_member in bot.get_chat_administrators(chat_id):
         if chat_member.user.username != bot.username:
             admins.append(chat_member.user.username)
     update.message.reply_text(" ".join("@"+a for a in admins))
+    last_at_admins_dict[chat_id] = time()
 
 def status_update(bot, update):
     chat_id = update.message.chat_id
