@@ -8,6 +8,7 @@ from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, Callb
 from datetime import datetime, timedelta
 from time import time
 from telegram.error import TelegramError, BadRequest
+from mwt import MWT
 
 logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -16,6 +17,22 @@ updater = Updater(token)
 
 at_admins_ratelimit = 10*60
 last_at_admins_dict = dict()
+
+@MWT(timeout=60*60)
+def getAdminIds(bot, chat_id):
+    admin_ids = list()
+    for chat_member in bot.get_chat_administrators(chat_id):
+        admin_ids.append(chat_member.user.id)
+    return admin_ids
+
+@MWT(timeout=60*60)
+def getAdminUsernames(bot, chat_id):
+    admins = list()
+    for chat_member in bot.get_chat_administrators(chat_id):
+        if chat_member.user.username != bot.username:
+            admins.append(chat_member.user.username)
+    return admins
+
 
 def start(bot, update):
     update.message.reply_text('你好{}，这个机器人会自动封禁新加入的bot以及拉入bot的用户，并等待管理员的审核。要让其正常工作，请将这个机器人添加进一个群组，设为管理员并打开封禁权限。'.format(update.message.from_user.first_name))
@@ -60,9 +77,7 @@ def ban_user(bot, chat_id, user, invite_user):
             raise TelegramError
     except (TelegramError, BadRequest):
         if bot_banned:
-            admin_ids = list()
-            for chat_member in bot.get_chat_administrators(chat_id):
-                admin_ids.append(chat_member.user.id)
+            admin_ids = getAdminIds(bot, chat_id)
             if invite_user.id in admin_ids:
                 unban_user(bot, [user.id], callback_mode=False, non_callback_chat_id=chat_id)
                 logger.info("Admin {1} invited bot {0} in the group {2}".format(user.id, invite_user.id, chat_id))
@@ -115,9 +130,7 @@ def handle_inline_result(bot, update):
     chat_id = update.callback_query.message.chat.id
     user = update.callback_query.from_user
     data = update.callback_query.data
-    admin_ids = list()
-    for chat_member in bot.get_chat_administrators(chat_id):
-        admin_ids.append(chat_member.user.id)
+    admin_ids = getAdminIds(bot, chat_id)
     if user.id not in admin_ids:
         logger.info("A non-admin user {0} (id: {1}) clicked the button from the group {2}".format(display_username(user), user.id, chat_id))
         bot.answer_callback_query(callback_query_id=update.callback_query.id, text="你没有权限执行此操作。")
@@ -146,10 +159,7 @@ def at_admins(bot, update):
         job_queue.run_once(delete_notice, 5)
         job_queue.start()
         return
-    admins = list()
-    for chat_member in bot.get_chat_administrators(chat_id):
-        if chat_member.user.username != bot.username:
-            admins.append(chat_member.user.username)
+    admins = getAdminUsernames(bot, chat_id)
     update.message.reply_text(" ".join("@"+a for a in admins))
     last_at_admins_dict[chat_id] = time()
     logger.info("At_admin sent from {0} {1}".format(update.message.from_user.id, chat_id))
