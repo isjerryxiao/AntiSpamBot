@@ -68,12 +68,13 @@ def ban_user(bot, chat_id, user, invite_user):
         if bot.restrict_chat_member(chat_id=chat_id, user_id=user.id, until_date=datetime.utcnow()+timedelta(days=367)):
             bot_banned = True
             if bot.restrict_chat_member(chat_id=chat_id, user_id=invite_user.id, until_date=datetime.utcnow()+timedelta(days=367)):
-                button = InlineKeyboardButton(text="解除封禁", callback_data="unban {0} {1}".format(user.id, invite_user.id))
+                buttons = [InlineKeyboardButton(text="解除封禁", callback_data="unban {0} {1}".format(user.id, invite_user.id)),
+                                    InlineKeyboardButton(text="移除并封禁", callback_data="kick {0} {1}".format(user.id, invite_user.id))]
                 bot.send_message(chat_id=chat_id,
-                        text="发现新加入的bot: {0} ，以及拉入bot的用户: {1} ，已经将其全部封禁。"
-                                "如需解封请管理员点击下面的按钮。".format(display_username(user), display_username(invite_user)),
+                        text="发现新加入的bot: {0} ，以及拉入bot的用户: {1} ，已经将其全部封禁。\n"
+                                "请管理员点击下面的按钮执行操作。".format(display_username(user), display_username(invite_user)),
                                 parse_mode="Markdown",
-                                reply_markup=InlineKeyboardMarkup([[button]]))
+                                reply_markup=InlineKeyboardMarkup([buttons]))
                 logger.info("Banned {0} and {1} in the group {2}".format(user.id, invite_user.id, chat_id))
             else:
                 raise TelegramError
@@ -86,13 +87,15 @@ def ban_user(bot, chat_id, user, invite_user):
                 unban_user(bot, [user.id], callback_mode=False, non_callback_chat_id=chat_id)
                 logger.info("Admin {1} invited bot {0} in the group {2}".format(user.id, invite_user.id, chat_id))
             else:
-                button = InlineKeyboardButton(text="解除封禁", callback_data="unban {0}".format(user.id))
+                # bad code. consider removing
+                buttons = [InlineKeyboardButton(text="解除封禁", callback_data="unban {0}".format(user.id)),
+                                    InlineKeyboardButton(text="移除并封禁", callback_data="kick {0}".format(user.id))]
                 bot.send_message(chat_id=chat_id,
                         text="发现新加入的bot: {0} ，以及拉入bot的用户: {1} 。\n"
-                                "由于未知原因拉入bot的用户无法封禁，已经将bot封禁。"
-                                "如需解封请管理员点击下面的按钮。".format(display_username(user), display_username(invite_user)),
+                                "由于未知原因拉入bot的用户无法封禁，已经将bot封禁。\n"
+                                "请管理员点击下面的按钮执行操作。".format(display_username(user), display_username(invite_user)),
                         parse_mode="Markdown",
-                        reply_markup=InlineKeyboardMarkup([[button]]))
+                        reply_markup=InlineKeyboardMarkup([buttons]))
                 logger.info("Banned {0} but not {1} in the group {2}".format(user.id, invite_user.id, chat_id))
         else:
             bot.send_message(chat_id=chat_id,
@@ -100,6 +103,31 @@ def ban_user(bot, chat_id, user, invite_user):
                             "请将机器人设为管理员并打开封禁权限。".format(display_username(user)),
                     parse_mode="Markdown")
             logger.info("Cannot ban {0} and {1} in the group {2}".format(user.id, invite_user.id, chat_id))
+
+
+def kick_user(bot, kick_ids, update):
+    chat_id = update.callback_query.message.chat.id
+    message = update.callback_query.message
+    user = update.callback_query.from_user
+    for kick_id in kick_ids:
+        try:
+            if bot.kick_chat_member(chat_id=chat_id, user_id=kick_id, until_date=datetime.utcnow()+timedelta(days=367)):
+                logger.info("Kicked {0} in the group {1}".format(kick_id, chat_id))
+            else:
+                raise TelegramError
+        except TelegramError:
+            logger.info("Cannot kick {0} in the group {1}".format(kick_id, chat_id))
+            return
+    try:
+        bot.edit_message_text(chat_id=chat_id, message_id=message.message_id,
+            text=message.text_markdown + "\n\n移除成功。操作人 {0}".format(display_username(user, atuser=False)),
+            parse_mode="Markdown",
+            reply_markup=None)
+    except:
+        logger.info("Cannot remove keyboard in message {0} from the group {1}".format(message.message_id, chat_id))
+    else:
+        logger.debug("Removed keyboard in message {0} from the group {1}".format(message.message_id, chat_id))
+    bot.answer_callback_query(callback_query_id=update.callback_query.id, text="移除成功。")
 
 
 def unban_user(bot, unban_ids, update=None, callback_mode=True, non_callback_chat_id=None):
@@ -125,7 +153,7 @@ def unban_user(bot, unban_ids, update=None, callback_mode=True, non_callback_cha
         return
     try:
         bot.edit_message_text(chat_id=chat_id, message_id=message.message_id,
-            text=message.text + "\n\n解封成功。操作人 {0}".format(display_username(user, atuser=False)),
+            text=message.text_markdown + "\n\n解封成功。操作人 {0}".format(display_username(user, atuser=False)),
             parse_mode="Markdown",
             reply_markup=None)
     except:
@@ -135,7 +163,16 @@ def unban_user(bot, unban_ids, update=None, callback_mode=True, non_callback_cha
     bot.answer_callback_query(callback_query_id=update.callback_query.id, text="解封成功。")
 
 
-def handle_inline_result(bot, update):
+def handle_inline_result_unban(*args):
+    handle_inline_result(*args, action_type=0)
+
+def handle_inline_result_kick(*args):
+    handle_inline_result(*args, action_type=1)
+
+def handle_inline_result(bot, update, action_type=0):
+    """
+        action_type: unban=0 ; kick=1
+    """
     chat_id = update.callback_query.message.chat.id
     user = update.callback_query.from_user
     data = update.callback_query.data
@@ -145,8 +182,11 @@ def handle_inline_result(bot, update):
         bot.answer_callback_query(callback_query_id=update.callback_query.id, text="你没有权限执行此操作。")
         return
     args = data.split()
-    unban_ids = args[1:]
-    unban_user(bot, unban_ids, update)
+    target_ids = args[1:]
+    if action_type:
+        kick_user(bot, target_ids, update)
+    else:
+        unban_user(bot, target_ids, update)
 
 def at_admins(bot, update):
     global last_at_admins_dict, at_admins_ratelimit
@@ -192,7 +232,8 @@ updater.dispatcher.add_handler(CommandHandler('start', start))
 updater.dispatcher.add_handler(CommandHandler('source', source))
 updater.dispatcher.add_handler(CommandHandler('admins', at_admins))
 updater.dispatcher.add_handler(CommandHandler('admin', at_admins))
-updater.dispatcher.add_handler(CallbackQueryHandler(handle_inline_result, pattern=r'unban'))
+updater.dispatcher.add_handler(CallbackQueryHandler(handle_inline_result_unban, pattern=r'unban'))
+updater.dispatcher.add_handler(CallbackQueryHandler(handle_inline_result_kick, pattern=r'kick'))
 updater.dispatcher.add_handler(MessageHandler(Filters.status_update, status_update))
 updater.start_polling()
 updater.idle()
