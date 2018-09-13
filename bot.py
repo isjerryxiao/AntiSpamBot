@@ -70,10 +70,10 @@ def ban_user(bot, chat_id, user, invite_user):
             if bot.restrict_chat_member(chat_id=chat_id, user_id=invite_user.id, until_date=datetime.utcnow()+timedelta(days=367)):
                 button = InlineKeyboardButton(text="解除封禁", callback_data="unban {0} {1}".format(user.id, invite_user.id))
                 bot.send_message(chat_id=chat_id,
-                        text="发现新加入的bot: {0} ，以及拉入bot的用户: {1} ，已经将其全部封禁。".format(display_username(user),
-                                        display_username(invite_user)), parse_mode="Markdown")
-                # Can't get the original message in markdown format. Bad implement.
-                bot.send_message(chat_id=chat_id, text="如需解封请管理员点击下面的按钮。", reply_markup=InlineKeyboardMarkup([[button]]))
+                        text="发现新加入的bot: {0} ，以及拉入bot的用户: {1} ，已经将其全部封禁。"
+                                "如需解封请管理员点击下面的按钮。".format(display_username(user), display_username(invite_user)),
+                                parse_mode="Markdown",
+                                reply_markup=InlineKeyboardMarkup([[button]]))
                 logger.info("Banned {0} and {1} in the group {2}".format(user.id, invite_user.id, chat_id))
             else:
                 raise TelegramError
@@ -89,9 +89,10 @@ def ban_user(bot, chat_id, user, invite_user):
                 button = InlineKeyboardButton(text="解除封禁", callback_data="unban {0}".format(user.id))
                 bot.send_message(chat_id=chat_id,
                         text="发现新加入的bot: {0} ，以及拉入bot的用户: {1} 。\n"
-                                "由于未知原因拉入bot的用户无法封禁，已经将bot封禁。".format(display_username(user),
-                                        display_username(invite_user)), parse_mode="Markdown")
-                bot.send_message(chat_id=chat_id, text="如需解封请管理员点击下面的按钮。", reply_markup=InlineKeyboardMarkup([[button]]))
+                                "由于未知原因拉入bot的用户无法封禁，已经将bot封禁。"
+                                "如需解封请管理员点击下面的按钮。".format(display_username(user), display_username(invite_user)),
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([[button]]))
                 logger.info("Banned {0} but not {1} in the group {2}".format(user.id, invite_user.id, chat_id))
         else:
             bot.send_message(chat_id=chat_id,
@@ -124,7 +125,7 @@ def unban_user(bot, unban_ids, update=None, callback_mode=True, non_callback_cha
         return
     try:
         bot.edit_message_text(chat_id=chat_id, message_id=message.message_id,
-            text="解封成功。操作人 {0}".format(display_username(user, atuser=False)),
+            text=message.text + "\n\n解封成功。操作人 {0}".format(display_username(user, atuser=False)),
             parse_mode="Markdown",
             reply_markup=None)
     except:
