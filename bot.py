@@ -26,11 +26,15 @@ def getAdminIds(bot, chat_id):
     return admin_ids
 
 @MWT(timeout=60*60)
-def getAdminUsernames(bot, chat_id):
+def getAdminUsernames(bot, chat_id, markdown=False):
     admins = list()
     for chat_member in bot.get_chat_administrators(chat_id):
-        if chat_member.user.username != bot.username:
-            admins.append(chat_member.user.username)
+        if markdown:
+            if chat_member.user.username != bot.username:
+                admins.append(chat_member.user.mention_markdown(name=chat_member.user.name))
+        else:
+            if chat_member.user.username and chat_member.user.username != bot.username:
+                admins.append(chat_member.user.username)
     return admins
 
 
@@ -208,8 +212,9 @@ def at_admins(bot, update):
         job_queue.run_once(delete_notice, 5)
         job_queue.start()
         return
-    admins = getAdminUsernames(bot, chat_id)
-    update.message.reply_text(" ".join("@"+a for a in admins))
+    admins = getAdminUsernames(bot, chat_id, markdown=True)
+    if admins:
+        update.message.reply_text("  ".join(admins), parse_mode='Markdown')
     last_at_admins_dict[chat_id] = time()
     logger.info("At_admin sent from {0} {1}".format(update.message.from_user.id, chat_id))
 
