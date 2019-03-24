@@ -315,7 +315,7 @@ def simple_challenge(bot, chat_id, user, invite_user):
             buttons = [[InlineKeyboardButton(text="请把我踢了吧", callback_data="clg kick {0} {1}".format(user.id, invite_user.id))],
                        [InlineKeyboardButton(text="点这里完成验证", callback_data="clg pass {0} {1}".format(user.id, invite_user.id))]]
             msg = bot.send_message(chat_id=chat_id,
-                    text="{0}:\n为了保证群聊安全\n"
+                    text="{0}:\n为了保证群聊安全，"
                         "请在5分钟内完成验证".format(display_username(user)),
                     parse_mode="Markdown",
                     reply_markup=InlineKeyboardMarkup(buttons))
