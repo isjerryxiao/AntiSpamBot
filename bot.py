@@ -175,7 +175,7 @@ def antibot_ban_user(bot, chat_id, user, invite_user):
             logger.error("Cannot ban {0} and {1} in the group {2}".format(user.id, invite_user.id, chat_id))
 
 
-def kick_user(bot, kick_ids, update, challenge=False, callback_mode=True, ncb_message_id=None, ncb_chat_id=None):
+def kick_user(bot, kick_ids, update, challenge=False, kick_by_admin=False, callback_mode=True, ncb_message_id=None, ncb_chat_id=None):
     if callback_mode:
         chat_id = update.callback_query.message.chat.id
         message = update.callback_query.message
@@ -188,7 +188,7 @@ def kick_user(bot, kick_ids, update, challenge=False, callback_mode=True, ncb_me
         try:
             if bot.kick_chat_member(chat_id=chat_id, user_id=kick_id, until_date=datetime.utcnow()+timedelta(days=367)):
                 logger.info("Kicked {0} in the group {1}".format(kick_id, chat_id))
-                if challenge:
+                if challenge and (kick_by_admin is False):
                     pcmgr.add_unban(kick_id, chat_id)
             else:
                 raise TelegramError
@@ -269,7 +269,8 @@ def challenge_verification(bot, update):
     admin_ids = getAdminIds(bot, chat_id)
     if user.id in admin_ids or int(r_user_id) == int(user.id) or int(invite_user_id) == int(user.id):
         if args[1] == "kick":
-            kick_user(bot, [r_user_id], update, challenge=True, callback_mode=True)
+            kick_by_admin = True if user.id in admin_ids else False
+            kick_user(bot, [r_user_id], update, challenge=True, callback_mode=True, kick_by_admin=kick_by_admin)
         elif args[1] == "pass":
             unban_user(bot, [r_user_id], update, challenge=True, callback_mode=True, reason='Challenge passed.')
         else:
