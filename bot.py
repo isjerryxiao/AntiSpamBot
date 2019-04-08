@@ -2,6 +2,24 @@
 # -*- coding: utf-8 -*-
 
 token = "token_here"
+
+VER = '20190408'
+WELCOME_WORDS = ['{}: 为防止垃圾信息泛滥，请在5分钟内完成验证',
+                 '{}: 本群组起用了加群验证，请在5分钟内完成验证',
+                 '{}: 为了保证您不被口球，请在5分钟内做出选择'
+                ]
+# challenge words
+CLG_DENY = ['把我踢了吧',
+            '快点口球我',
+            '口球我最喜欢了'
+           ]
+CLG_ACCEPT = ['点这里完成验证',
+              '求求你放过我吧'
+             ]
+
+
+
+
 import logging
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler, run_async
@@ -10,6 +28,7 @@ from time import time
 from telegram.error import TelegramError, BadRequest
 from mwt import MWT
 from threading import Lock
+from random import choice
 
 logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -26,8 +45,8 @@ class PendingChallengeManager:
     def __init__(self, timeout=5*60, utimeout=30*60):
         self.timeout = timeout
         self.utimeout = utimeout
-    def add(self, chat_id, user_id, invite_user_id, message_id):
-        self.pending[(chat_id, message_id)] = (user_id, invite_user_id, int(time()))
+    def add(self, chat_id, user_id, invite_user_id, message_id, join_msgid):
+        self.pending[(chat_id, message_id)] = (user_id, invite_user_id, int(time()), join_msgid)
     def remove(self, chat_id, message_id):
         try:
             del self.pending[(chat_id, message_id)]
@@ -44,7 +63,7 @@ class PendingChallengeManager:
             removable = list()
             for key in self.pending:
                 (chat_id, message_id) = key
-                (user_id, _, challenge_time) = self.pending[key]
+                (user_id, _, challenge_time, join_msgid) = self.pending[key]
                 if timenow - challenge_time >= self.timeout:
                     logger.debug('Removing user {0} form {1} due to timeout.'.format(user_id, chat_id))
                     try:
@@ -52,6 +71,10 @@ class PendingChallengeManager:
                                   ncb_chat_id=chat_id, ncb_message_id=message_id)
                     except:
                         logger.error('Unable to removing user {0} form {1}'.format(user_id, chat_id))
+                    try:
+                        bot.delete_message(chat_id=chat_id, message_id=join_msgid)
+                    except:
+                        logger.info('Unable to delete enter message for {0} form {1}'.format(user_id, chat_id))
                     removable.append(key)
             for key in removable:
                 self.remove(*key)
@@ -110,7 +133,7 @@ def start(bot, update):
 
 
 def source(bot, update):
-    update.message.reply_text('Source code: https://github.com/isjerryxiao/AntiSpamBot')
+    update.message.reply_text('Source code: https://github.com/isjerryxiao/AntiSpamBot\nVersion: {}'.format(VER))
     logger.debug("Source from {0}".format(update.message.from_user.id))
 
 
@@ -142,7 +165,7 @@ def antibot_ban_user(bot, chat_id, user, invite_user):
                            InlineKeyboardButton(text="移除并封禁", callback_data="kick {0} {1}".format(user.id, invite_user.id))]
                 bot.send_message(chat_id=chat_id,
                         text="发现新加入的bot: {0} ，以及拉入bot的用户: {1} ，已经将其全部封禁。\n"
-                                "请管理员点击下面的按钮执行操作。".format(display_username(user), display_username(invite_user)),
+                             "请管理员点击下面的按钮执行操作。".format(display_username(user), display_username(invite_user)),
                         parse_mode="Markdown",
                         reply_markup=InlineKeyboardMarkup([buttons]))
                 logger.info("Banned {0} and {1} in the group {2}".format(user.id, invite_user.id, chat_id))
@@ -162,15 +185,15 @@ def antibot_ban_user(bot, chat_id, user, invite_user):
                                     InlineKeyboardButton(text="移除并封禁", callback_data="kick {0}".format(user.id))]
                 bot.send_message(chat_id=chat_id,
                         text="发现新加入的bot: {0} ，以及拉入bot的用户: {1} 。\n"
-                                "由于未知原因拉入bot的用户无法封禁，已经将bot封禁。\n"
-                                "请管理员点击下面的按钮执行操作。".format(display_username(user), display_username(invite_user)),
+                             "由于未知原因拉入bot的用户无法封禁，已经将bot封禁。\n"
+                             "请管理员点击下面的按钮执行操作。".format(display_username(user), display_username(invite_user)),
                         parse_mode="Markdown",
                         reply_markup=InlineKeyboardMarkup([buttons]))
                 logger.error("Banned {0} but not {1} in the group {2}".format(user.id, invite_user.id, chat_id))
         else:
             bot.send_message(chat_id=chat_id,
                     text="发现新加入的bot: {0} ，但机器人不是管理员导致无法实施有效行动。"
-                            "请将机器人设为管理员并打开封禁权限。".format(display_username(user)),
+                         "请将机器人设为管理员并打开封禁权限。".format(display_username(user)),
                     parse_mode="Markdown")
             logger.error("Cannot ban {0} and {1} in the group {2}".format(user.id, invite_user.id, chat_id))
 
@@ -262,15 +285,19 @@ def challenge_verification(bot, update):
     message_id = update.callback_query.message.message_id
     data = update.callback_query.data
     args = data.split()
-    if not (args and len(args) == 4):
+    if not (args and len(args) == 5):
         logger.error('Wrong Inline challenge data length. ' + str(data))
         return
-    (r_user_id, invite_user_id) = args[2:]
+    (r_user_id, invite_user_id, join_msgid) = args[2:]
     admin_ids = getAdminIds(bot, chat_id)
     if user.id in admin_ids or int(r_user_id) == int(user.id) or int(invite_user_id) == int(user.id):
         if args[1] == "kick":
             kick_by_admin = True if user.id in admin_ids else False
             kick_user(bot, [r_user_id], update, challenge=True, callback_mode=True, kick_by_admin=kick_by_admin)
+            try:
+                bot.delete_message(chat_id=chat_id, message_id=join_msgid)
+            except:
+                logger.info('Unable to delete enter message for {0} form {1}'.format(r_user_id, chat_id))
         elif args[1] == "pass":
             unban_user(bot, [r_user_id], update, challenge=True, callback_mode=True, reason='Challenge passed.')
         else:
@@ -279,7 +306,7 @@ def challenge_verification(bot, update):
         pcmgr.remove(chat_id, message_id)
     else:
         logger.info("Naughty user {0} (id: {1}) clicked {3} "
-                    "from the group {2}".format(display_username(user, markdown=False), 
+                    "from the group {2}".format(display_username(user, markdown=False),
                                                 user.id, chat_id, " ".join(data)))
         bot.answer_callback_query(callback_query_id=update.callback_query.id,
                                   text="点你妹！你就这么想被口球吗？",
@@ -310,23 +337,28 @@ def handle_inline_result(bot, update, action_type=0):
     else:
         unban_user(bot, target_ids, update, reason='Admin Unbanned.')
 
-def simple_challenge(bot, chat_id, user, invite_user):
+def simple_challenge(bot, chat_id, user, invite_user, join_msgid):
     try:
         if bot.restrict_chat_member(chat_id=chat_id, user_id=user.id, until_date=datetime.utcnow()+timedelta(days=367)):
-            buttons = [[InlineKeyboardButton(text="请把我踢了吧", callback_data="clg kick {0} {1}".format(user.id, invite_user.id))],
-                       [InlineKeyboardButton(text="点这里完成验证", callback_data="clg pass {0} {1}".format(user.id, invite_user.id))]]
+            buttons = [[InlineKeyboardButton(text=choice(CLG_DENY), callback_data = \
+                            "clg kick {0} {1} {2}".format(user.id, invite_user.id, join_msgid))
+                       ],
+                       [InlineKeyboardButton(text=choice(CLG_ACCEPT),
+                                             callback_data = \
+                            "clg pass {0} {1} {2}".format(user.id, invite_user.id, join_msgid))
+                       ]
+                      ]
             msg = bot.send_message(chat_id=chat_id,
-                    text="{0}:\n为了保证群聊安全，"
-                        "请在5分钟内完成验证".format(display_username(user)),
+                    text=choice(WELCOME_WORDS).format(display_username(user)),
                     parse_mode="Markdown",
                     reply_markup=InlineKeyboardMarkup(buttons))
-            pcmgr.add(chat_id, user.id, invite_user.id, msg.message_id)
+            pcmgr.add(chat_id, user.id, invite_user.id, msg.message_id, join_msgid)
         else:
             raise TelegramError
     except (TelegramError, BadRequest):
         bot.send_message(chat_id=chat_id,
                 text="发现新加入的成员: {0} ，但机器人不是管理员导致无法实施有效行动。"
-                        "请将机器人设为管理员并打开封禁权限。".format(display_username(user)),
+                     "请将机器人设为管理员并打开封禁权限。".format(display_username(user)),
                 parse_mode="Markdown")
         logger.error("Cannot ban {0} and {1} in the group {2}".format(user.id, invite_user.id, chat_id))
 
@@ -377,7 +409,7 @@ def status_update(bot, update):
                         # An admin invited him.
                         pass
                     else:
-                        simple_challenge(bot, chat_id, user, invite_user)
+                        simple_challenge(bot, chat_id, user, invite_user, update.message.message_id)
 
 if __name__ == '__main__':
     updater.dispatcher.add_handler(CommandHandler('start', start))
@@ -390,4 +422,3 @@ if __name__ == '__main__':
     updater.dispatcher.add_handler(MessageHandler(Filters.status_update, status_update))
     updater.start_polling()
     updater.idle()
-
