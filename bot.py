@@ -28,7 +28,7 @@ from time import time
 from telegram.error import TelegramError, BadRequest
 from mwt import MWT
 from threading import Lock
-from random import choice
+from random import choice, randint, shuffle
 
 logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -288,21 +288,23 @@ def challenge_verification(bot, update):
     if not (args and len(args) == 5):
         logger.error('Wrong Inline challenge data length. ' + str(data))
         return
+    try:
+        action = int(args[1]) % 2
+    except ValueError:
+        logger.error('Wrong Inline challenge action. ' + str(data))
+        action = 0
     (r_user_id, invite_user_id, join_msgid) = args[2:]
     admin_ids = getAdminIds(bot, chat_id)
     if user.id in admin_ids or int(r_user_id) == int(user.id) or int(invite_user_id) == int(user.id):
-        if args[1] == "kick":
+        if action != 1:
             kick_by_admin = True if user.id in admin_ids else False
             kick_user(bot, [r_user_id], update, challenge=True, callback_mode=True, kick_by_admin=kick_by_admin)
             try:
                 bot.delete_message(chat_id=chat_id, message_id=join_msgid)
             except:
                 logger.info('Unable to delete enter message for {0} form {1}'.format(r_user_id, chat_id))
-        elif args[1] == "pass":
-            unban_user(bot, [r_user_id], update, challenge=True, callback_mode=True, reason='Challenge passed.')
         else:
-            logger.error('Wrong Inline challenge data. ' + str(data))
-            return
+            unban_user(bot, [r_user_id], update, challenge=True, callback_mode=True, reason='Challenge passed.')
         pcmgr.remove(chat_id, message_id)
     else:
         logger.info("Naughty user {0} (id: {1}) clicked {3} "
@@ -340,14 +342,17 @@ def handle_inline_result(bot, update, action_type=0):
 def simple_challenge(bot, chat_id, user, invite_user, join_msgid):
     try:
         if bot.restrict_chat_member(chat_id=chat_id, user_id=user.id, until_date=datetime.utcnow()+timedelta(days=367)):
+            kick_int = 2 * randint(0, 49) + 2
+            pass_int = 2 * randint(0, 49) + 1
             buttons = [[InlineKeyboardButton(text=choice(CLG_DENY), callback_data = \
-                            "clg kick {0} {1} {2}".format(user.id, invite_user.id, join_msgid))
+                            "clg {kick_int} {0} {1} {2}".format(user.id, invite_user.id, join_msgid, kick_int=kick_int))
                        ],
                        [InlineKeyboardButton(text=choice(CLG_ACCEPT),
                                              callback_data = \
-                            "clg pass {0} {1} {2}".format(user.id, invite_user.id, join_msgid))
+                            "clg {pass_int} {0} {1} {2}".format(user.id, invite_user.id, join_msgid, pass_int=pass_int))
                        ]
                       ]
+            shuffle(buttons)
             msg = bot.send_message(chat_id=chat_id,
                     text=choice(WELCOME_WORDS).format(display_username(user)),
                     parse_mode="Markdown",
