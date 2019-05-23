@@ -3,7 +3,7 @@
 
 token = "token_here"
 
-VER = '20190524'
+VER = '20190524-1'
 WELCOME_WORDS = ['{}: 为防止垃圾信息泛滥，请在5分钟内完成验证',
                  '{}: 本群组启用了加群验证，请在5分钟内完成验证'
                 ]
@@ -34,7 +34,7 @@ from hashlib import md5, sha256
 logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-updater = Updater(token)
+updater = Updater(token, workers=4)
 
 at_admins_ratelimit = 10*60
 last_at_admins_dict = dict()
@@ -123,7 +123,7 @@ def getAdminUsernames(bot, chat_id, markdown=False):
                 admins.append(chat_member.user.username)
     return admins
 
-
+@run_async
 def start(bot, update):
     update.message.reply_text('你好{}，机器人目前功能如下:\n'
                               '1.新加群用户需要在5分钟内点击按钮验证，否则将封禁30分钟。\n'
@@ -132,7 +132,7 @@ def start(bot, update):
                               '设为管理员并打开封禁权限。'.format(update.message.from_user.first_name))
     logger.debug("Start from {0}".format(update.message.from_user.id))
 
-
+@run_async
 def source(bot, update):
     update.message.reply_text('Source code: https://github.com/isjerryxiao/AntiSpamBot\nVersion: {}'.format(VER))
     logger.debug("Source from {0}".format(update.message.from_user.id))
@@ -312,10 +312,11 @@ def challenge_verification(bot, update):
         bot.answer_callback_query(callback_query_id=update.callback_query.id,
                                   text="点你妹！你就这么想被口球吗？",
                                   show_alert=True)
-
+@run_async
 def handle_inline_result_unban(*args):
     handle_inline_result(*args, action_type=0)
 
+@run_async
 def handle_inline_result_kick(*args):
     handle_inline_result(*args, action_type=1)
 
@@ -373,7 +374,7 @@ def simple_challenge(bot, chat_id, user, invite_user, join_msgid):
                 parse_mode="Markdown")
         logger.error("Cannot ban {0} and {1} in the group {2}".format(user.id, invite_user.id, chat_id))
 
-
+@run_async
 def at_admins(bot, update):
     if update.message.chat.type in ('private', 'channel'):
         return
