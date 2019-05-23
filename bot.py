@@ -3,7 +3,7 @@
 
 token = "token_here"
 
-VER = '20190524-1'
+VER = '20190524-2'
 WELCOME_WORDS = ['{}: 为防止垃圾信息泛滥，请在5分钟内完成验证',
                  '{}: 本群组启用了加群验证，请在5分钟内完成验证'
                 ]
@@ -345,7 +345,9 @@ def challenge_gen_pw(user_id, join_msgid):
         pw = "{}{}{}{}".format(SALT, user_id, join_msgid, action)
         pw_sha256 = sha256(pw.encode('utf-8', errors='ignore')).hexdigest()
         pw_sha256_md5 = md5(pw_sha256.encode('utf-8', errors='ignore')).hexdigest()
-        callbacks.append(pw_sha256_md5)
+        # telegram limits callback_data to 64 bytes max, we need to be brief
+        pw_sha256_md5_truncated = pw_sha256_md5[:8]
+        callbacks.append(pw_sha256_md5_truncated)
     return callbacks
 
 def simple_challenge(bot, chat_id, user, invite_user, join_msgid):
