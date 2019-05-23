@@ -15,7 +15,8 @@ CLG_DENY = ['把我踢了吧',
 CLG_ACCEPT = ['点这里完成验证',
               '我不是机器人'
              ]
-
+# please change
+SALT = 'whatever'
 
 
 
@@ -28,6 +29,7 @@ from telegram.error import TelegramError, BadRequest
 from mwt import MWT
 from threading import Lock
 from random import choice, randint, shuffle
+from hashlib import md5, sha256
 
 logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -287,15 +289,13 @@ def challenge_verification(bot, update):
     if not (args and len(args) == 5):
         logger.error('Wrong Inline challenge data length. ' + str(data))
         return
-    try:
-        action = int(args[1]) % 2
-    except ValueError:
-        logger.error('Wrong Inline challenge action. ' + str(data))
-        action = 0
     (r_user_id, invite_user_id, join_msgid) = args[2:]
     admin_ids = getAdminIds(bot, chat_id)
+    expected_callbacks = challenge_gen_pw(r_user_id, join_msgid)
     if user.id in admin_ids or int(r_user_id) == int(user.id) or int(invite_user_id) == int(user.id):
-        if action != 1:
+        if args[1] != expected_callbacks[1]:
+            if args[1] != expected_callbacks[0]:
+                logger.error('Wrong Inline challenge action, kicked.' + str(data))
             kick_by_admin = True if user.id in admin_ids else False
             kick_user(bot, [r_user_id], update, challenge=True, callback_mode=True, kick_by_admin=kick_by_admin)
             try:
@@ -338,17 +338,24 @@ def handle_inline_result(bot, update, action_type=0):
     else:
         unban_user(bot, target_ids, update, reason='Admin Unbanned.')
 
+def challenge_gen_pw(user_id, join_msgid):
+    callbacks = list()
+    for action in ("kick", "pass"):
+        pw = "{}{}{}{}".format(SALT, user_id, join_msgid, action)
+        pw_sha256 = sha256(pw.encode('utf-8', errors='ignore')).hexdigest()
+        pw_sha256_md5 = md5(pw_sha256.encode('utf-8', errors='ignore')).hexdigest()
+        callbacks.append(pw_sha256_md5)
+    return callbacks
+
 def simple_challenge(bot, chat_id, user, invite_user, join_msgid):
     try:
         if bot.restrict_chat_member(chat_id=chat_id, user_id=user.id, until_date=datetime.utcnow()+timedelta(days=367)):
-            kick_int = 2 * randint(0, 49) + 2
-            pass_int = 2 * randint(0, 49) + 1
+            btn_callbacks = challenge_gen_pw(user.id, join_msgid)
             buttons = [[InlineKeyboardButton(text=choice(CLG_DENY), callback_data = \
-                            "clg {kick_int} {0} {1} {2}".format(user.id, invite_user.id, join_msgid, kick_int=kick_int))
+                            "clg {kick_cb} {0} {1} {2}".format(user.id, invite_user.id, join_msgid, kick_cb=btn_callbacks[0]))
                        ],
-                       [InlineKeyboardButton(text=choice(CLG_ACCEPT),
-                                             callback_data = \
-                            "clg {pass_int} {0} {1} {2}".format(user.id, invite_user.id, join_msgid, pass_int=pass_int))
+                       [InlineKeyboardButton(text=choice(CLG_ACCEPT), callback_data = \
+                            "clg {pass_cb} {0} {1} {2}".format(user.id, invite_user.id, join_msgid, pass_cb=btn_callbacks[1]))
                        ]
                       ]
             shuffle(buttons)
