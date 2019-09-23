@@ -4,5 +4,5 @@
 The bot is currently running as [@ArchCNAntiSpamBot](http://telegram.me/ArchCNAntiSpamBot).  
 
 To run the bot yourself, you will need: 
-- Python3
+- Python 3.6+
 - The [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) module
