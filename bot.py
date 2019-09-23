@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from typing import List, Any
-VER: str = '20190923-1'
+VER: str = '20190923-2'
 
 # please change token and salt
 TOKEN: str = "token_here"
-SALT: str  = 'whatever'
+SALT: str  = "whatever"
 
 
 WELCOME_WORDS: List[str] = [
@@ -37,7 +37,7 @@ AT_ADMINS_RATELIMIT: int = 5*60
 CHALLENGE_TIMEOUT: int   = 5*60
 UNBAN_TIMEOUT: int       = 5*60
 
-DEBUG = False
+DEBUG: bool = False
 
 import logging
 from telegram import Update, User, Bot, Message, Chat
@@ -146,6 +146,7 @@ def kick_user(context: CallbackContext, chat_id: int, kick_id: int, reason: str 
         return True
     return False
 
+
 CHAT_PERMISSIONS_TUPLE: tuple = (
     'can_send_messages',
     'can_send_media_messages',
@@ -163,13 +164,10 @@ for p in CHAT_PERMISSIONS_TUPLE:
 for p in CHAT_PERMISSIONS_TUPLE[:5]:
     setattr(CHAT_PERMISSION_RW, p, True)
 
-def get_chat_permissions(context: CallbackContext, chat_id: int) -> ChatPermissions:
-    @MWT(timeout=8*60*60)
-    def get_chat(chat_id: int) -> Chat:
-        chat: Chat = context.bot.get_chat(chat_id)
-        return chat
+@MWT(timeout=8*60*60)
+def get_chat_permissions(bot: Bot, chat_id: int) -> ChatPermissions:
     try:
-        chat: Chat = get_chat(chat_id)
+        chat: Chat = bot.get_chat(chat_id)
     except TelegramError as err:
         logger.warning(f'Cannot get chat permission for {chat_id}, {err}, using default')
         return CHAT_PERMISSION_RW
@@ -199,7 +197,7 @@ def restrict_user(context: CallbackContext, chat_id: int, user_id: int, extra: s
 
 def unban_user(context: CallbackContext, chat_id: int, user_id: int, reason: str = '') -> bool:
     try:
-        chat_permission = get_chat_permissions(context, chat_id)
+        chat_permission = get_chat_permissions(context.bot, chat_id)
         if context.bot.restrict_chat_member(chat_id=chat_id, user_id=user_id,
                                 permissions = chat_permission,
                                 until_date=datetime.utcnow()+timedelta(days=367)):
@@ -265,6 +263,11 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
     admin_ids = getAdminIds(bot, chat_id)
     expected_callback = challenge_gen_pw(r_user_id, join_msgid)
     if user.id in admin_ids or str(r_user_id) == str(user.id) or str(invite_user_id) == str(user.id):
+        # Remove old job first, then take action
+        mjobs: tuple = context.job_queue.get_jobs_by_name(challange_hash(r_user_id, chat_id, join_msgid))
+        assert len(mjobs) == 1
+        mjob: Job = mjobs[0]
+        mjob.schedule_removal()
         if args[1] != expected_callback:
             kick_by_admin = True if user.id in admin_ids else False
             kick_user(context, chat_id, r_user_id, 'Kicked by admin' if kick_by_admin else 'Challange failed')
@@ -278,10 +281,6 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
                                     show_alert=True)
         for _msg_id in (join_msgid, message_id):
             delete_message(context, chat_id=chat_id, message_id=_msg_id)
-        mjobs: tuple = context.job_queue.get_jobs_by_name(challange_hash(r_user_id, chat_id, join_msgid))
-        assert len(mjobs) == 1
-        mjob: Job = mjobs[0]
-        mjob.schedule_removal()
     else:
         logger.info((f"Naughty user {fName(user, markdown=False)} (id: {user.id}) clicked a button"
                      f"from the group {chat_id}"))
@@ -340,7 +339,7 @@ def at_admins(update: Update, context: CallbackContext) -> None:
         return
     bot: Bot = context.bot
     chat_id: int = update.message.chat.id
-    last_at_admins: float = context.chat_data.setdefault('last_at_admins', 0)
+    last_at_admins: float = context.chat_data.setdefault('last_at_admins', 0.0)
     if time() - last_at_admins < AT_ADMINS_RATELIMIT:
         notice: Message = update.message.reply_text(f"请再等待 {round(AT_ADMINS_RATELIMIT - (time() - last_at_admins), 3)} 秒")
         def delete_notice(context: Any) -> None:
