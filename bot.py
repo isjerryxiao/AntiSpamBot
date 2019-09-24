@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from typing import List, Any, Callable, Tuple, Set
-VER: str = '20190924-1'
+VER: str = '20190924-2'
 
 # please change token and salt
 TOKEN: str = "token_here"
@@ -298,13 +298,15 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
             def then_unban(_: CallbackContext) -> None:
                 unban_user(context, chat_id, r_user_id, reason='Unban timeout reached.')
             context.job_queue.run_once(then_unban, UNBAN_TIMEOUT, name='unban_job')
+            for _msg_id in (join_msgid, message_id):
+                delete_message(context, chat_id=chat_id, message_id=_msg_id)
         else:
             unban_user(context, chat_id, r_user_id, reason='Challenge passed.')
             bot.answer_callback_query(callback_query_id=update.callback_query.id,
                                     text='验证成功。',
                                     show_alert=True)
-        for _msg_id in (join_msgid, message_id):
-            delete_message(context, chat_id=chat_id, message_id=_msg_id)
+            delete_message(context, chat_id=chat_id, message_id=message_id)
+
     else:
         logger.info((f"Naughty user {fName(user, markdown=False)} (id: {user.id}) clicked a button"
                      f" from the group {chat_id}"))
