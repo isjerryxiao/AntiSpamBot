@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-from typing import List, Any
-VER: str = '20190923-2'
+from typing import List, Any, Callable, Tuple, Set
+VER: str = '20190924-1'
 
 # please change token and salt
 TOKEN: str = "token_here"
@@ -37,6 +37,10 @@ AT_ADMINS_RATELIMIT: int = 5*60
 CHALLENGE_TIMEOUT: int   = 5*60
 UNBAN_TIMEOUT: int       = 5*60
 
+# memorize some chat messages in case that some users
+# send messages before the bot restricts them
+STORE_CHAT_MESSAGES: int  = 30
+
 DEBUG: bool = False
 
 import logging
@@ -44,7 +48,9 @@ from telegram import Update, User, Bot, Message, Chat
 from telegram.ext import CallbackContext, Job
 
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler, run_async
+from telegram.ext import (Updater, CommandHandler, MessageHandler, Filters,
+                          CallbackQueryHandler, run_async)
+from telegram.ext.filters import InvertedFilter
 
 from datetime import datetime, timedelta
 from time import time
@@ -69,16 +75,32 @@ def error_callback(update: Update, context:CallbackContext) -> None:
     except Exception:
         print_traceback(debug=DEBUG)
 
-def collect_error(func):
+def collect_error(func: Callable) -> Callable:
     '''
         designed to fix a bug in the telegram library
     '''
     def wrapped(*args, **kwargs):
         try:
-            func(*args, **kwargs)
+            return func(*args, **kwargs)
         except Exception:
             print_traceback(debug=DEBUG)
     return wrapped
+
+def filter_old_updates(func: Callable[[Update, CallbackContext], Callable]) -> Callable:
+    '''
+        do not process very old updates
+    '''
+    def wrapped(update: Update, context: CallbackContext) -> Any:
+        msg: Message = update.effective_message
+        sent_time: datetime = msg.edit_date if msg.edit_date else msg.date
+        seconds_from_now: float = (datetime.utcnow() - sent_time).total_seconds()
+        if int(seconds_from_now) > 30:
+            logger.warning(f'Not processing update {update.update_id} since it\'s too old ({int(seconds_from_now)}).')
+            return
+        else:
+            return func(update, context)
+    return wrapped
+
 
 def fName(user: User, atuser: bool = True, markdown: bool = True) -> str:
     name: str = user.full_name
@@ -113,12 +135,13 @@ def getAdminUsernames(bot: Bot, chat_id: int, markdown: bool = False) -> List[st
 
 @run_async
 @collect_error
+@filter_old_updates
 def start(update: Update, context: CallbackContext) -> None:
     update.message.reply_text((f'你好{update.message.from_user.first_name}'
                                 '，机器人目前功能如下:\n'
                                f'1.新加群用户需要在{int(CHALLENGE_TIMEOUT/60)}分钟内点击'
                                f'按钮验证，否则将封禁{int(UNBAN_TIMEOUT/60)}分钟。\n'
-                                '  若该用户为群成员邀请，则邀请人也可以帮助验证。\n'
+                                '若该用户为群成员邀请，则邀请人也可以帮助验证。\n'
                                 '2.新加群的bot需要拉入用户或管理员确认。\n'
                                 '要让其正常工作，请将这个机器人添加进一个群组，'
                                 '设为管理员并打开封禁权限。'))
@@ -126,6 +149,7 @@ def start(update: Update, context: CallbackContext) -> None:
 
 @run_async
 @collect_error
+@filter_old_updates
 def source(update: Update, context: CallbackContext) -> None:
     update.message.reply_text(f'Source code: https://github.com/isjerryxiao/AntiSpamBot\nVersion: {VER}')
     logger.debug(f"Source from {update.message.from_user.id}")
@@ -271,7 +295,7 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
         if args[1] != expected_callback:
             kick_by_admin = True if user.id in admin_ids else False
             kick_user(context, chat_id, r_user_id, 'Kicked by admin' if kick_by_admin else 'Challange failed')
-            def then_unban(_: Any) -> None:
+            def then_unban(_: CallbackContext) -> None:
                 unban_user(context, chat_id, r_user_id, reason='Unban timeout reached.')
             context.job_queue.run_once(then_unban, UNBAN_TIMEOUT, name='unban_job')
         else:
@@ -283,7 +307,7 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
             delete_message(context, chat_id=chat_id, message_id=_msg_id)
     else:
         logger.info((f"Naughty user {fName(user, markdown=False)} (id: {user.id}) clicked a button"
-                     f"from the group {chat_id}"))
+                     f" from the group {chat_id}"))
         bot.answer_callback_query(callback_query_id=update.callback_query.id,
                                   text=choice(PERMISSION_DENY),
                                   show_alert=True)
@@ -311,8 +335,14 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                                             text=choice(WELCOME_WORDS).format(fName(user, markdown=True)),
                                             parse_mode="Markdown",
                                             reply_markup=InlineKeyboardMarkup(buttons))
-            def kick_then_unban(_: Any) -> None:
-                def then_unban(_: Any) -> None:
+            # User restricted and buttons sent, now search for this user's previous messages and delete them
+            sto_msgs: List[Tuple[User, int]] = context.chat_data.get('stored_messages', list())
+            msgids_to_delete: Set[int] = set([u_m[1] for u_m in sto_msgs if u_m[0] == user.id])
+            for _mid in msgids_to_delete:
+                delete_message(context, chat_id, _mid)
+            # kick them after timeout
+            def kick_then_unban(_: CallbackContext) -> None:
+                def then_unban(_: CallbackContext) -> None:
                     unban_user(context, chat_id, user.id, reason='Unban timeout reached.')
                 if kick_user(context, chat_id, user.id, reason='Challange timeout.'):
                     context.job_queue.run_once(then_unban, UNBAN_TIMEOUT, name='unban_job')
@@ -333,6 +363,7 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
 
 @run_async
 @collect_error
+@filter_old_updates
 def at_admins(update: Update, context: CallbackContext) -> None:
     chat_type: str = update.message.chat.type
     if chat_type in ('private', 'channel'):
@@ -342,40 +373,53 @@ def at_admins(update: Update, context: CallbackContext) -> None:
     last_at_admins: float = context.chat_data.setdefault('last_at_admins', 0.0)
     if time() - last_at_admins < AT_ADMINS_RATELIMIT:
         notice: Message = update.message.reply_text(f"请再等待 {round(AT_ADMINS_RATELIMIT - (time() - last_at_admins), 3)} 秒")
-        def delete_notice(context: Any) -> None:
-            update.message.delete()
-            notice.delete()
-            logger.info(f"Deleted at_admin spam messages {update.message.message_id} and {notice.message_id} from {update.message.from_user.id}")
+        def delete_notice(_: CallbackContext) -> None:
+            for _msg_id in (update.message.message_id, notice.message_id):
+                delete_message(context, chat_id=chat_id, message_id=_msg_id)
+            logger.info((f"Deleted at_admin spam messages {update.message.message_id} and "
+                         f"{notice.message_id} from {update.message.from_user.id}"))
         context.job_queue.run_once(delete_notice, 5)
-        return
-    admins: List[str] = getAdminUsernames(bot, chat_id, markdown=True)
-    if admins:
-        update.message.reply_text("  ".join(admins), parse_mode='Markdown')
-    context.chat_data["last_at_admins"]: float = time()
-    logger.info(f"At_admin sent from {update.message.from_user.id} {chat_id}")
-
+    else:
+        admins: List[str] = getAdminUsernames(bot, chat_id, markdown=True)
+        if admins:
+            update.message.reply_text("  ".join(admins), parse_mode='Markdown')
+        context.chat_data["last_at_admins"]: float = time()
+        logger.info(f"At_admin sent from {update.message.from_user.id} {chat_id}")
 
 @run_async
 @collect_error
-def status_update(update: Update, context: CallbackContext) -> None:
+@filter_old_updates
+def new_messages(update: Update, context: CallbackContext) -> None:
+    if not (update.effective_user and update.effective_message):
+        return
+    sto_msgs: List[Tuple[User, int]] = context.chat_data.setdefault('stored_messages', list())
+    sto_msgs.append((update.effective_user.id, update.effective_message.message_id))
+    if len(sto_msgs) > STORE_CHAT_MESSAGES:
+        sto_msgs.pop(0)
+
+@run_async
+@collect_error
+@filter_old_updates
+def new_mems(update: Update, context: CallbackContext) -> None:
     chat_type: str = update.message.chat.type
     if chat_type in ('private', 'channel'):
         return
     bot: Bot = context.bot
     chat_id: int = update.message.chat_id
-    if update.message.new_chat_members:
-        users: List[User] = update.message.new_chat_members
-        invite_user: User = update.message.from_user
-        for user in users:
-            if user.id == bot.id:
-                logger.info(f"Myself joined the group {chat_id}")
+    assert update.message.new_chat_members
+    users: List[User] = update.message.new_chat_members
+    invite_user: User = update.message.from_user
+    for user in users:
+        if user.id == bot.id:
+            logger.info(f"Myself joined the group {chat_id}")
+        else:
+            logger.debug(f"{user.id} joined the group {chat_id}")
+            if invite_user.id != user.id and invite_user.id in getAdminIds(bot, chat_id):
+                # An admin invited him.
+                logger.info((f"{'bot ' if user.is_bot else ''}{user.id} invited by admin "
+                                f"{invite_user.id} into the group {chat_id}"))
             else:
-                logger.debug(f"{user.id} joined the group {chat_id}")
-                if invite_user.id != user.id and invite_user.id in getAdminIds(bot, chat_id):
-                    # An admin invited him.
-                    logger.info(f"{'bot ' if user.is_bot else ''}{user.id} invited by admin {invite_user.id} into the group {chat_id}")
-                else:
-                    simple_challenge(context, chat_id, user, invite_user, update.effective_message.message_id)
+                simple_challenge(context, chat_id, user, invite_user, update.effective_message.message_id)
 
 if __name__ == '__main__':
     updater.dispatcher.add_error_handler(error_callback)
@@ -384,7 +428,8 @@ if __name__ == '__main__':
     updater.dispatcher.add_handler(CommandHandler('admins', at_admins))
     updater.dispatcher.add_handler(CommandHandler('admin', at_admins))
     updater.dispatcher.add_handler(CallbackQueryHandler(challenge_verification, pattern=r'clg'))
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update, status_update))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_members, new_mems))
+    updater.dispatcher.add_handler(MessageHandler(InvertedFilter(Filters.status_update), new_messages))
     logger.info('Antispambot started.')
     updater.start_polling()
     updater.idle()
