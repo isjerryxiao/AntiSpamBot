@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from typing import List, Any, Callable, Tuple, Set
-VER: str = '20190924-2'
+VER: str = '20190924-3'
 
 # please change token and salt
 TOKEN: str = "token_here"
@@ -44,7 +44,7 @@ STORE_CHAT_MESSAGES: int  = 30
 DEBUG: bool = False
 
 import logging
-from telegram import Update, User, Bot, Message, Chat
+from telegram import Update, User, Bot, Message
 from telegram.ext import CallbackContext, Job
 
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions
@@ -171,36 +171,24 @@ def kick_user(context: CallbackContext, chat_id: int, kick_id: int, reason: str 
     return False
 
 
-CHAT_PERMISSIONS_TUPLE: tuple = (
-    'can_send_messages',
-    'can_send_media_messages',
-    'can_send_polls',
-    'can_send_other_messages',
-    'can_add_web_page_previews',
-    'can_change_info',
-    'can_invite_users',
-    'can_pin_messages'
-)
-CHAT_PERMISSION_RO: ChatPermissions = ChatPermissions()
-CHAT_PERMISSION_RW: ChatPermissions = ChatPermissions()
-for p in CHAT_PERMISSIONS_TUPLE:
-    setattr(CHAT_PERMISSION_RO, p, False)
-for p in CHAT_PERMISSIONS_TUPLE[:5]:
-    setattr(CHAT_PERMISSION_RW, p, True)
+def _export_chat_permissions() -> List[ChatPermissions]:
+    CHAT_PERMISSIONS_TUPLE: tuple = (
+        'can_send_messages',
+        'can_send_media_messages',
+        'can_send_polls',
+        'can_send_other_messages',
+        'can_add_web_page_previews',
+        'can_change_info',
+        'can_invite_users',
+        'can_pin_messages'
+    )
+    permissons = [ChatPermissions(), ChatPermissions()]
+    for i in (0, 1):
+        for p in CHAT_PERMISSIONS_TUPLE:
+            setattr(permissons[i], p, bool(i))
+    return permissons
 
-@MWT(timeout=8*60*60)
-def get_chat_permissions(bot: Bot, chat_id: int) -> ChatPermissions:
-    try:
-        chat: Chat = bot.get_chat(chat_id)
-    except TelegramError as err:
-        logger.warning(f'Cannot get chat permission for {chat_id}, {err}, using default')
-        return CHAT_PERMISSION_RW
-    except Exception:
-        print_traceback(DEBUG)
-        return CHAT_PERMISSION_RW
-    else:
-        permisson: ChatPermissions = chat.permissions
-        return permisson
+(CHAT_PERMISSION_RO, CHAT_PERMISSION_RW) = _export_chat_permissions()
 
 
 def restrict_user(context: CallbackContext, chat_id: int, user_id: int, extra: str = '') -> bool:
@@ -221,9 +209,8 @@ def restrict_user(context: CallbackContext, chat_id: int, user_id: int, extra: s
 
 def unban_user(context: CallbackContext, chat_id: int, user_id: int, reason: str = '') -> bool:
     try:
-        chat_permission = get_chat_permissions(context.bot, chat_id)
         if context.bot.restrict_chat_member(chat_id=chat_id, user_id=user_id,
-                                permissions = chat_permission,
+                                permissions = CHAT_PERMISSION_RW,
                                 until_date=datetime.utcnow()+timedelta(days=367)):
             logger.info(f"Unbanned {user_id} in the group {chat_id}{', reason: ' if reason else ''}{reason}")
         else:
@@ -394,7 +381,7 @@ def at_admins(update: Update, context: CallbackContext) -> None:
 def new_messages(update: Update, context: CallbackContext) -> None:
     if not (update.effective_user and update.effective_message):
         return
-    sto_msgs: List[Tuple[User, int]] = context.chat_data.setdefault('stored_messages', list())
+    sto_msgs: List[Tuple[int, int]] = context.chat_data.setdefault('stored_messages', list())
     sto_msgs.append((update.effective_user.id, update.effective_message.message_id))
     if len(sto_msgs) > STORE_CHAT_MESSAGES:
         sto_msgs.pop(0)
