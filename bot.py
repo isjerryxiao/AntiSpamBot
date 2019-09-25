@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from typing import List, Any, Callable, Tuple, Set
-VER: str = '20190924-3'
+VER: str = '20190925-1'
 
 # please change token and salt
 TOKEN: str = "token_here"
@@ -40,6 +40,8 @@ UNBAN_TIMEOUT: int       = 5*60
 # memorize some chat messages in case that some users
 # send messages before the bot restricts them
 STORE_CHAT_MESSAGES: int  = 30
+# use userbot backend
+USER_BOT_BACKEND: bool = False
 
 DEBUG: bool = False
 
@@ -47,7 +49,7 @@ import logging
 from telegram import Update, User, Bot, Message
 from telegram.ext import CallbackContext, Job
 
-from telegram import InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (Updater, CommandHandler, MessageHandler, Filters,
                           CallbackQueryHandler, run_async)
 from telegram.ext.filters import InvertedFilter
@@ -155,89 +157,6 @@ def source(update: Update, context: CallbackContext) -> None:
     logger.debug(f"Source from {update.message.from_user.id}")
 
 
-def kick_user(context: CallbackContext, chat_id: int, kick_id: int, reason: str = '') -> bool:
-    bot: Bot = context.bot
-    try:
-        if bot.kick_chat_member(chat_id=chat_id, user_id=kick_id, until_date=datetime.utcnow()+timedelta(days=367)):
-            logger.info(f"Kicked {kick_id} in the group {chat_id}{', reason: ' if reason else ''}{reason}")
-        else:
-            raise TelegramError('kick_chat_member returned bad status')
-    except TelegramError as err:
-        logger.error(f"Cannot kick {kick_id} in the group {chat_id}, {err}")
-    except Exception:
-        print_traceback(DEBUG)
-    else:
-        return True
-    return False
-
-
-def _export_chat_permissions() -> List[ChatPermissions]:
-    CHAT_PERMISSIONS_TUPLE: tuple = (
-        'can_send_messages',
-        'can_send_media_messages',
-        'can_send_polls',
-        'can_send_other_messages',
-        'can_add_web_page_previews',
-        'can_change_info',
-        'can_invite_users',
-        'can_pin_messages'
-    )
-    permissons = [ChatPermissions(), ChatPermissions()]
-    for i in (0, 1):
-        for p in CHAT_PERMISSIONS_TUPLE:
-            setattr(permissons[i], p, bool(i))
-    return permissons
-
-(CHAT_PERMISSION_RO, CHAT_PERMISSION_RW) = _export_chat_permissions()
-
-
-def restrict_user(context: CallbackContext, chat_id: int, user_id: int, extra: str = '') -> bool:
-    try:
-        if context.bot.restrict_chat_member(chat_id=chat_id, user_id=user_id,
-                                permissions = CHAT_PERMISSION_RO,
-                                until_date=datetime.utcnow()+timedelta(days=367)):
-            logger.info(f"Restricted {user_id} in the group {chat_id}{extra}")
-        else:
-            raise TelegramError('restrict_chat_member returned bad status')
-    except TelegramError as err:
-        logger.error(f"Cannot restrict {user_id} in the group {chat_id}, {err}")
-    except Exception:
-        print_traceback(DEBUG)
-    else:
-        return True
-    return False
-
-def unban_user(context: CallbackContext, chat_id: int, user_id: int, reason: str = '') -> bool:
-    try:
-        if context.bot.restrict_chat_member(chat_id=chat_id, user_id=user_id,
-                                permissions = CHAT_PERMISSION_RW,
-                                until_date=datetime.utcnow()+timedelta(days=367)):
-            logger.info(f"Unbanned {user_id} in the group {chat_id}{', reason: ' if reason else ''}{reason}")
-        else:
-            raise TelegramError('restrict_chat_member returned bad status')
-    except TelegramError as err:
-        logger.error(f"Cannot unban {user_id} in the group {chat_id}, {err}")
-    except Exception:
-        print_traceback(DEBUG)
-    else:
-        return True
-    return False
-
-def delete_message(context: CallbackContext, chat_id: int, message_id: int) -> bool:
-    try:
-        if context.bot.delete_message(chat_id=chat_id, message_id=message_id):
-            logger.debug(f"Deleted message {message_id} in the group {chat_id}")
-        else:
-            raise TelegramError('delete_message returned bad status')
-    except TelegramError as err:
-        logger.error(f"Cannot delete message {message_id} in the group {chat_id}, {err}")
-    except Exception:
-        print_traceback(DEBUG)
-    else:
-        return True
-    return False
-
-
 def challenge_gen_pw(user_id: int, join_msgid: int, real: bool = True) -> str:
     if real:
         action = 'pass'
@@ -276,9 +195,16 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
     if user.id in admin_ids or str(r_user_id) == str(user.id) or str(invite_user_id) == str(user.id):
         # Remove old job first, then take action
         mjobs: tuple = context.job_queue.get_jobs_by_name(challange_hash(r_user_id, chat_id, join_msgid))
-        assert len(mjobs) == 1
-        mjob: Job = mjobs[0]
-        mjob.schedule_removal()
+        if len(mjobs) == 1:
+            mjob: Job = mjobs[0]
+            mjob.schedule_removal()
+        else:
+            logger.error(f'There is no pending job for {r_user_id} in the group {chat_id}')
+            if DEBUG:
+                try:
+                    raise Exception
+                except Exception:
+                    print_traceback(debug=DEBUG)
         if args[1] != expected_callback:
             kick_by_admin = True if user.id in admin_ids else False
             kick_user(context, chat_id, r_user_id, 'Kicked by admin' if kick_by_admin else 'Challange failed')
@@ -411,6 +337,10 @@ def new_mems(update: Update, context: CallbackContext) -> None:
                 simple_challenge(context, chat_id, user, invite_user, update.effective_message.message_id)
 
 if __name__ == '__main__':
+    if USER_BOT_BACKEND:
+        from userbot_backend import kick_user, restrict_user, unban_user, delete_message, client as userbot_client
+    else:
+        from bot_backend import kick_user, restrict_user, unban_user, delete_message
     updater.dispatcher.add_error_handler(error_callback)
     updater.dispatcher.add_handler(CommandHandler('start', start))
     updater.dispatcher.add_handler(CommandHandler('source', source))
@@ -419,6 +349,12 @@ if __name__ == '__main__':
     updater.dispatcher.add_handler(CallbackQueryHandler(challenge_verification, pattern=r'clg'))
     updater.dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_members, new_mems))
     updater.dispatcher.add_handler(MessageHandler(InvertedFilter(Filters.status_update), new_messages))
-    logger.info('Antispambot started.')
-    updater.start_polling()
-    updater.idle()
+    if USER_BOT_BACKEND:
+        logger.info('Antispambot started with userbot backend.')
+        with userbot_client:
+            updater.start_polling()
+            updater.idle()
+    else:
+        logger.info('Antispambot started.')
+        updater.start_polling()
+        updater.idle()
