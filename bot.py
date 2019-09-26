@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from typing import List, Any, Callable, Tuple, Set
-VER: str = '20190925-1'
+VER: str = '20190926-2'
 
 # please change token and salt
 TOKEN: str = "token_here"
@@ -227,7 +227,7 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
                                   text=choice(PERMISSION_DENY),
                                   show_alert=True)
 
-def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
+def simple_challenge(context, chat_id, user, invite_user, join_msgid, tries: int = 0) -> None:
     bot: Bot = context.bot
     try:
         if restrict_user(context, chat_id=chat_id, user_id=user.id, extra=', is_bot=True' if user.is_bot else ''):
@@ -251,7 +251,7 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                                             parse_mode="Markdown",
                                             reply_markup=InlineKeyboardMarkup(buttons))
             # User restricted and buttons sent, now search for this user's previous messages and delete them
-            sto_msgs: List[Tuple[User, int]] = context.chat_data.get('stored_messages', list())
+            sto_msgs: List[Tuple[int, int]] = context.chat_data.get('stored_messages', list())
             msgids_to_delete: Set[int] = set([u_m[1] for u_m in sto_msgs if u_m[0] == user.id])
             for _mid in msgids_to_delete:
                 delete_message(context, chat_id, _mid)
@@ -266,14 +266,18 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
             context.job_queue.run_once(kick_then_unban, CHALLENGE_TIMEOUT,
                                        name=challange_hash(user.id, chat_id, join_msgid))
         else:
-            raise TelegramError
-    except (TelegramError, BadRequest):
+            raise TelegramError('')
+    except TelegramError:
         bot.send_message(chat_id=chat_id,
                 text="发现新加入的成员: {0} ，但机器人不是管理员导致无法实施有效行动。"
                      "请将机器人设为管理员并打开封禁权限。".format(fName(user, markdown=True)),
                 parse_mode="Markdown")
         logger.error((f"Cannot restrict {user.id} and {invite_user.id} in "
                       f"the group {chat_id}{', is_bot=True' if user.is_bot else ''}"))
+    except NetworkError as err:
+        logger.warning(f'Error restricting {user.id} in {chat_id}, {err}')
+        if tries <= 1:
+            simple_challenge(context, chat_id, user, invite_user, join_msgid, tries=tries+1)
 
 
 @run_async
@@ -338,7 +342,8 @@ def new_mems(update: Update, context: CallbackContext) -> None:
 
 if __name__ == '__main__':
     if USER_BOT_BACKEND:
-        from userbot_backend import kick_user, restrict_user, unban_user, delete_message, client as userbot_client
+        from userbot_backend import (kick_user, restrict_user, unban_user, delete_message,
+                                     client as userbot_client, client_init as userbot_client_init)
     else:
         from bot_backend import kick_user, restrict_user, unban_user, delete_message
     updater.dispatcher.add_error_handler(error_callback)
@@ -352,6 +357,7 @@ if __name__ == '__main__':
     if USER_BOT_BACKEND:
         logger.info('Antispambot started with userbot backend.')
         with userbot_client:
+            userbot_client_init()
             updater.start_polling()
             updater.idle()
     else:
