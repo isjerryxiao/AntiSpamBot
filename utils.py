@@ -1,6 +1,7 @@
 import logging
 import sys
 import traceback
+from threading import Thread
 logger = logging.getLogger('antispambot.utils')
 
 def print_traceback(debug: bool = False) -> None:
@@ -46,3 +47,11 @@ def format_exc_plus():
                 ret += "<ERROR WHILE PRINTING VALUE>"
             ret += '\n'
     return ret
+
+def background(func):
+    def wrapped(*args, **kwargs):
+        tr = Thread(target=func, args=args, kwargs=kwargs)
+        tr.daemon = True
+        tr.start()
+        return tr
+    return wrapped

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from typing import List, Any, Callable, Tuple, Set
-VER: str = '20190926-2'
+VER: str = '20191014-1'
 
 # please change token and salt
 TOKEN: str = "token_here"
@@ -343,7 +343,7 @@ def new_mems(update: Update, context: CallbackContext) -> None:
 if __name__ == '__main__':
     if USER_BOT_BACKEND:
         from userbot_backend import (kick_user, restrict_user, unban_user, delete_message,
-                                     client as userbot_client, client_init as userbot_client_init)
+                                     userbot_updater)
     else:
         from bot_backend import kick_user, restrict_user, unban_user, delete_message
     updater.dispatcher.add_error_handler(error_callback)
@@ -356,10 +356,12 @@ if __name__ == '__main__':
     updater.dispatcher.add_handler(MessageHandler(InvertedFilter(Filters.status_update), new_messages))
     if USER_BOT_BACKEND:
         logger.info('Antispambot started with userbot backend.')
-        with userbot_client:
-            userbot_client_init()
+        try:
+            userbot_updater.start()
             updater.start_polling()
             updater.idle()
+        finally:
+            userbot_updater.stop()
     else:
         logger.info('Antispambot started.')
         updater.start_polling()
