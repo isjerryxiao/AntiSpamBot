@@ -632,7 +632,7 @@ def do_garbage_collection(context: CallbackContext) -> None:
                 except Exception:
                     print_traceback(debug=DEBUG)
         sto_msgs = all_chat_data[chat_id].get('stored_messages', None)
-        if type(sto_msgs) is not list:
+        if type(sto_msgs) is list:
             to_rm = list()
             try:
                 for item in sto_msgs:
