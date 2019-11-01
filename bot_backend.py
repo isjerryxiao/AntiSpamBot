@@ -11,7 +11,7 @@ from telegram.error import (TelegramError, Unauthorized, BadRequest,
 from utils import print_traceback
 from datetime import datetime, timedelta
 
-DEBUG: bool = False
+from config import DEBUG
 
 def kick_user(context: CallbackContext, chat_id: int, kick_id: int, reason: str = '') -> bool:
     bot: Bot = context.bot

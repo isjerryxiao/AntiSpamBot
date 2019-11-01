@@ -1,11 +1,9 @@
+# This is the userbot api backend of kick_user, restrict_user, unban_user, delete_message
 from typing import Union, Any, Coroutine
 import logging
 logger = logging.getLogger('antispambot.userbot_backend')
 
-API_ID = 00000 # Your api id
-API_HASH = 'Your api hash'
-
-
+from config import API_ID, API_HASH
 
 from typeguard import typechecked
 
@@ -20,24 +18,45 @@ from threading import Lock
 session_name: str = 'antispam'
 client = TelegramClient(session_name, API_ID, API_HASH)
 
-DEBUG: bool = False
+from config import DEBUG
 
+
+class myCoro:
+    def __init__(self, coro, *args, **kwargs):
+        self.__coro = coro
+        self.__args = args
+        self.__kwargs = kwargs
+    def get(self):
+        return self.__coro(*self.__args, **self.__kwargs)
 
 @typechecked
-def async_run(coro: Coroutine, timeout: int = 60) -> Any:
-    ret = None
-    mlock = Lock()
-    mlock.acquire()
-    def done_callback(_):
-        mlock.release()
-    task = client.loop.create_task(coro)
-    task.add_done_callback(done_callback)
-    if mlock.acquire(timeout=timeout):
-        ret = task.result()
-    else:
-        logger.error(f"Timed out waiting for task {task}: {timeout}")
-    mlock.release()
-    return ret
+def async_run(coro: myCoro, timeout: int = 8, retry: int = 10) -> Any:
+    tries = 0
+    @typechecked
+    def waitfor_task() -> Any:
+        mlock = Lock()
+        mlock.acquire()
+        def done_callback(_):
+            try:
+                mlock.release()
+            except RuntimeError:
+                logger.error(f"Timed out task {task} exited.")
+        task = client.loop.create_task(coro.get())
+        task.add_done_callback(done_callback)
+        if mlock.acquire(timeout=timeout):
+            return task
+        else:
+            mlock.release()
+            logger.error(f"Timed out waiting for task {task}: {timeout} [{tries+1}/{retry}]")
+            return None
+    while True:
+        task = waitfor_task()
+        if task is not None:
+            return task.result()
+        else:
+            tries += 1
+        if tries >= retry:
+            return None
 
 @client.on(events.NewMessage)
 async def my_event_handler(event):
@@ -62,7 +81,7 @@ class userbot_updater:
         client_init()
     @staticmethod
     def stop() -> None:
-        async_run(client.disconnect())
+        async_run(myCoro(client.disconnect))
         while client.loop.is_running():
             sleep(1)
 
@@ -154,7 +173,7 @@ async def userbot_delete_message(chat_id: int, message_id: int) -> bool:
 @typechecked
 def kick_user(context: CallbackContext, chat_id: int, user_id: Union[int, str], reason: str = '') -> bool:
     user_id = int(user_id)
-    ret = async_run(userbot_kick_user(chat_id, user_id))
+    ret = async_run(myCoro(userbot_kick_user, chat_id, user_id))
     if ret:
         logger.info(f"Kicked {user_id} in the group {chat_id}{', reason: ' if reason else ''}{reason}")
     else:
@@ -164,7 +183,7 @@ def kick_user(context: CallbackContext, chat_id: int, user_id: Union[int, str], 
 @typechecked
 def restrict_user(context: CallbackContext, chat_id: int, user_id: Union[int, str], extra: str = '') -> bool:
     user_id = int(user_id)
-    ret = async_run(userbot_restrict_user(chat_id, user_id))
+    ret = async_run(myCoro(userbot_restrict_user, chat_id, user_id))
     if ret:
         logger.info(f"Restricted {user_id} in the group {chat_id}{extra}")
     else:
@@ -174,7 +193,7 @@ def restrict_user(context: CallbackContext, chat_id: int, user_id: Union[int, st
 @typechecked
 def unban_user(context: CallbackContext, chat_id: int, user_id: Union[int, str], reason: str = '') -> bool:
     user_id = int(user_id)
-    ret = async_run(userbot_unban_user(chat_id, user_id))
+    ret = async_run(myCoro(userbot_unban_user, chat_id, user_id))
     if ret:
         logger.info(f"Unbanned {user_id} in the group {chat_id}{', reason: ' if reason else ''}{reason}")
     else:
@@ -184,7 +203,7 @@ def unban_user(context: CallbackContext, chat_id: int, user_id: Union[int, str],
 @typechecked
 def delete_message(context: CallbackContext, chat_id: int, message_id: Union[int, str]) -> bool:
     message_id = int(message_id)
-    ret = async_run(userbot_delete_message(chat_id, message_id))
+    ret = async_run(myCoro(userbot_delete_message, chat_id, message_id))
     if ret:
         logger.debug(f"Deleted message {message_id} in the group {chat_id}")
     else:
