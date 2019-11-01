@@ -354,16 +354,24 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
             ]
             callback_datalist = [btn.callback_data for btn in buttons]
             buttons = organize_btns(buttons)
-            msg: Message = bot.send_message(chat_id=chat_id,
-                                            reply_to_message_id=join_msgid,
-                                            text=('' if user.is_bot or not(flag_flooding) else \
-                                                        f'待验证用户: {len(rest_users)+1}名\n') + \
-                                                 settings.choice('WELCOME_WORDS').replace(
-                                                    '%time%', f"{settings.get('CHALLENGE_TIMEOUT')}") + \
-                                                    f"\n{CLG_QUESTION}",
-                                            parse_mode="Markdown",
-                                            reply_markup=InlineKeyboardMarkup(buttons),
-                                            isgroup=False) # These messages are essential and should not be delayed.
+            for _ in range(3):
+                try:
+                    msg: Message = bot.send_message(chat_id=chat_id,
+                                    reply_to_message_id=join_msgid,
+                                    text=('' if user.is_bot or not(flag_flooding) else \
+                                                f'待验证用户: {len(rest_users)+1}名\n') + \
+                                            settings.choice('WELCOME_WORDS').replace(
+                                            '%time%', f"{settings.get('CHALLENGE_TIMEOUT')}") + \
+                                            f"\n{CLG_QUESTION}",
+                                    parse_mode="Markdown",
+                                    reply_markup=InlineKeyboardMarkup(buttons),
+                                    isgroup=False) # These messages are essential and should not be delayed.
+                except TelegramError:
+                    pass
+                else:
+                    break
+            else:
+                raise TelegramError(f'Send challenge message failed 3 times for {user.id}')
             if not (user.is_bot or not(flag_flooding)):
                 my_msg[0] = msg.message_id
                 my_msg[1] = callback_datalist
