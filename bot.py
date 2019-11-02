@@ -224,7 +224,7 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
     user: User = update.callback_query.from_user
     message_id: int = update.callback_query.message.message_id
     data: str = update.callback_query.data
-    my_msg = context.chat_data.setdefault('my_msg', [None, list()]) # [msgid, [CorrectCallback, FakeCallback, ..]]
+    my_msg = context.chat_data.setdefault('my_msg', [None, [None,]]) # [msgid, [CorrectCallback, FakeCallback, ..]]
     rest_users = context.chat_data.setdefault('rest_users', dict()) # {user_id: [int(time), join_msgid, bot_invite_uid]}
     settings = chatSettings(context.chat_data.get('chat_settings', dict()))
     if not data:
@@ -238,10 +238,6 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
         return
     (btn_callback, bot_uid) = args[1:]
     # bot_uid is '' if the restricted user is not a bot
-    if bot_uid == '' and data not in my_msg[1]:
-        # Unknown callback, maybe is from a previous message, ignore.
-        bot.answer_callback_query(callback_query_id=update.callback_query.id, text="Try again")
-        return
     if bot_uid:
         try:
             r_user_id = int(bot_uid)
@@ -251,17 +247,22 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
             return
     else:
         r_user_id = user.id
-    rul = rest_users.get(r_user_id, None)
-    if type(rul) is not list:
+    d_user = rest_users.get(r_user_id, None)
+    if type(d_user) is not tuple:
         naughty_user = True
     else:
-        (_, join_msgid, bot_invite_uid) = rul
-        if bot_uid == '':
+        (_, join_msgid, bot_invite_uid, bot_clg_msg_id) = d_user
+        if not bot_uid:
             naughty_user = False
         elif user.id == bot_invite_uid or user.id in getAdminIds(bot, chat_id):
             naughty_user = False
         else:
-            naughty_user = True
+            if r_user_id != user.id and rest_users.get(user.id, None):
+                # This user clicked the wrong message
+                bot.answer_callback_query(callback_query_id=update.callback_query.id, text="Not your captcha")
+                return
+            else:
+                naughty_user = True
     if not naughty_user:
         # Remove old job first, then take action
         if settings.get('CHALLENGE_TIMEOUT') > 0:
@@ -276,7 +277,15 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
                         raise Exception
                     except Exception:
                         print_traceback(debug=DEBUG)
-        if (bot_uid == '' and data != my_msg[1][0]) or (bot_uid and btn_callback != challenge_gen_pw(r_user_id, join_msgid)):
+        my_msg_id = my_msg[0]
+        # whether the captchais correct or not
+        if data == my_msg[1][0]:
+            captcha_corrent = True
+        elif bot_uid and btn_callback == challenge_gen_pw(r_user_id, join_msgid):
+            captcha_corrent = True
+        else:
+            captcha_corrent = False
+        if not captcha_corrent:
             kick_user(context, chat_id, r_user_id, 'Challange failed')
             def then_unban(_: CallbackContext) -> None:
                 unban_user(context, chat_id, r_user_id, reason='Unban timeout reached.')
@@ -284,8 +293,13 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
             if UNBAN_TIMEOUT > 0:
                 context.job_queue.run_once(then_unban, UNBAN_TIMEOUT, name='unban_job')
             rest_users.pop(r_user_id)
-            if bot_uid or len(rest_users) == 0:
-                delete_message(context, chat_id=chat_id, message_id=message_id)
+            # delete messages
+            if len(rest_users) == 0 and my_msg_id:
+                delete_message(context, chat_id=chat_id, message_id=my_msg_id)
+                if my_msg_id == my_msg[0]:
+                    my_msg[0] = None
+            if bot_clg_msg_id:
+                delete_message(context, chat_id=chat_id, message_id=bot_clg_msg_id)
             delete_message(context, chat_id=chat_id, message_id=join_msgid)
         else:
             unban_user(context, chat_id, r_user_id, reason='Challenge passed.')
@@ -305,7 +319,7 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
 
 def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
     bot: Bot = context.bot
-    my_msg = context.chat_data.setdefault('my_msg', [None, list()]) # [msgid, [CorrectCallback, FakeCallback, ..]]
+    my_msg = context.chat_data.setdefault('my_msg', [None, [None,]]) # [msgid, [CorrectCallback, FakeCallback, ..]]
     rest_users = context.chat_data.setdefault('rest_users', dict()) # {user_id: [int(time), join_msgid, bot_invite_uid]}
     settings = chatSettings(context.chat_data.get('chat_settings', dict()))
     (CLG_QUESTION, CLG_ACCEPT, CLG_DENY) = settings.get_clg_accecpt_deny()
@@ -320,6 +334,8 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
             flag_flooding = True
         else:
             flag_flooding = False
+    flag_flooding = flag_flooding and not user.is_bot
+    my_msg_id = my_msg[0]
     def organize_btns(buttons: List[InlineKeyboardButton]) -> List[List[InlineKeyboardButton]]:
         '''
             Shuffle buttons and put them into a 2d array
@@ -341,15 +357,16 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
     try:
         if restrict_user(context, chat_id=chat_id, user_id=user.id, extra=((' [flooding]' if flag_flooding else '') + \
                                                                            (' [bot]' if user.is_bot else ''))):
-            if my_msg[0] is not None and (not (user.is_bot or not(flag_flooding))):
+            if my_msg[0] and flag_flooding:
+                logger.debug(f'Deleting flooding captcha {my_msg[0]} in {chat_id}')
                 delete_message(context, chat_id, my_msg[0])
             buttons = [
-                InlineKeyboardButton(text=CLG_ACCEPT, callback_data = \
-                    (f"clg {challenge_gen_pw(user.id, join_msgid)} "
-                     f"{user.id if user.is_bot or not(flag_flooding) else ''}")),
-                *[InlineKeyboardButton(text=fake_btn_text, callback_data = \
-                    (f"clg {challenge_gen_pw(user.id, join_msgid, real=False)} "
-                     f"{user.id if user.is_bot or not(flag_flooding) else ''}"))
+                InlineKeyboardButton(text=CLG_ACCEPT, callback_data = (\
+                    f"clg {challenge_gen_pw(user.id, join_msgid)}" + \
+                   (f" {user.id}" if not flag_flooding else ''))),
+                *[InlineKeyboardButton(text=fake_btn_text, callback_data = (\
+                    f"clg {challenge_gen_pw(user.id, join_msgid, real=False)}" + \
+                   (f" {user.id}" if not flag_flooding else '')))
                 for fake_btn_text in CLG_DENY]
             ]
             callback_datalist = [btn.callback_data for btn in buttons]
@@ -358,7 +375,7 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                 try:
                     msg: Message = bot.send_message(chat_id=chat_id,
                                     reply_to_message_id=join_msgid,
-                                    text=('' if user.is_bot or not(flag_flooding) else \
+                                    text=('' if not flag_flooding else \
                                                 f'待验证用户: {len(rest_users)+1}名\n') + \
                                             settings.choice('WELCOME_WORDS').replace(
                                             '%time%', f"{settings.get('CHALLENGE_TIMEOUT')}") + \
@@ -372,11 +389,12 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                     break
             else:
                 raise TelegramError(f'Send challenge message failed 3 times for {user.id}')
-            if not (user.is_bot or not(flag_flooding)):
+            if flag_flooding:
                 my_msg[0] = msg.message_id
                 my_msg[1] = callback_datalist
-            bot_invite_uid = invite_user.id if user.is_bot or not(flag_flooding) else None
-            rest_users[user.id] = [int(time()), join_msgid, bot_invite_uid]
+            bot_invite_uid = None if flag_flooding else invite_user.id
+            bot_clg_msg_id = None if flag_flooding else msg.message_id
+            rest_users[user.id] = (int(time()), join_msgid, bot_invite_uid, bot_clg_msg_id)
             # User restricted and buttons sent, now search for this user's previous messages and delete them
             sto_msgs: List[Tuple[int, int, int]] = context.chat_data.get('stored_messages', list())
             msgids_to_delete: Set[int] = set([u_m_t[1] for u_m_t in sto_msgs if u_m_t[0] == user.id])
@@ -391,7 +409,12 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                     if UNBAN_TIMEOUT > 0:
                         context.job_queue.run_once(then_unban, UNBAN_TIMEOUT, name='unban_job')
                 rest_users.pop(user.id)
-                if (user.is_bot or not(flag_flooding)) or len(rest_users) == 0:
+                # delete messages
+                if len(rest_users) == 0 and my_msg_id:
+                    delete_message(context, chat_id=chat_id, message_id=my_msg_id)
+                    if my_msg_id == my_msg[0]:
+                        my_msg[0] = None
+                if not flag_flooding:
                     delete_message(context, chat_id=chat_id, message_id=msg.message_id)
                 delete_message(context, chat_id=chat_id, message_id=join_msgid)
             CHALLENGE_TIMEOUT = settings.get('CHALLENGE_TIMEOUT')
@@ -424,15 +447,15 @@ def at_admins(update: Update, context: CallbackContext) -> None:
         def delete_notice(_: CallbackContext) -> None:
             for _msg_id in (update.message.message_id, notice.message_id):
                 delete_message(context, chat_id=chat_id, message_id=_msg_id)
-            logger.info((f"Deleted at_admin spam messages {update.message.message_id} and "
-                         f"{notice.message_id} from {update.message.from_user.id}"))
+            logger.debug((f"Deleted at_admin spam messages {update.message.message_id} and "
+                          f"{notice.message_id} from {update.message.from_user.id}"))
         context.job_queue.run_once(delete_notice, 5)
     else:
         admins: List[str] = getAdminUsernames(bot, chat_id, markdown=True)
         if admins:
             update.message.reply_text("  ".join(admins), parse_mode='Markdown')
         context.chat_data["last_at_admins"]: float = time()
-        logger.info(f"At_admin sent from {update.message.from_user.id} {chat_id}")
+        logger.debug(f"At_admin sent from {update.message.from_user.id} {chat_id}")
 
 def write_settings(update: Update, context: CallbackContext) -> None:
     settings_call = context.chat_data.get('settings_call', None)

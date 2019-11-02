@@ -7,8 +7,8 @@ AT_ADMINS_RATELIMIT: int = 5*60
 # memorize some chat messages in case that some users
 # send messages before the bot restricts them
 STORE_CHAT_MESSAGES: int = 100
-# do garbage collection every 7200 seconds
-GARBAGE_COLLENTION_INTERVAL: int = 7200
+# do garbage collection every 86400 seconds
+GARBAGE_COLLENTION_INTERVAL: int = 86400
 
 # These options can be changed per group
 CHAT_SETTINGS = {
@@ -33,7 +33,7 @@ CHAT_SETTINGS = {
 
     'CHALLENGE_TIMEOUT': 5*60,
     'UNBAN_TIMEOUT': 5*60,
-    'FLOOD_LIMIT': 10,
+    'FLOOD_LIMIT': 5,
 }
 
 CHAT_SETTINGS_HELP = {

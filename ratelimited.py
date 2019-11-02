@@ -54,14 +54,14 @@ class DelayedMessage:
                  group_burst_limit=20,
                  group_time_limit_ms=60000):
         self._all_delay = Delayed(all_burst_limit, all_time_limit_ms)
-        self._group_deley = Delayed(group_burst_limit, group_time_limit_ms)
+        self._group_delay = Delayed(group_burst_limit, group_time_limit_ms)
 
     def delayed(self, func):
         '''
             @DelayedMessage().delayed
         '''
         def wrapped(*args, **kwargs):
-            dl = self._group_deley if kwargs.pop('isgroup', True) else self._all_delay
+            dl = self._group_delay if kwargs.pop('isgroup', True) else self._all_delay
             return dl(func, *args, **kwargs)
         return wrapped
 
