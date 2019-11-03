@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from typing import List, Any, Callable, Tuple, Set
-VER: str = '20191101-2'
+VER: str = 'v2.0.2'
 
 from config import (SALT, WORKERS, AT_ADMINS_RATELIMIT, STORE_CHAT_MESSAGES,
                     GARBAGE_COLLENTION_INTERVAL,
@@ -150,9 +150,10 @@ class chatSettings:
             self.__data[name] = uinput
         elif name == 'CLG_QUESTIONS':
             uinput = [l for l in inputstr.split('\n') if l]
-            if len(uinput) < 3:
+            if len(uinput) < 3 or len(self.get(name)) >= 10:
                 return False
             uinput[0] = uinput[0][:4000]
+            uinput = uinput[:50+1]
             for i in range(1, len(uinput)):
                 uinput[i] = uinput[i][:200]
             if not self.__data.get(name, None):
@@ -182,7 +183,7 @@ class chatSettings:
         else:
             raise NotImplementedError(f"{name} is unknown")
         return name
-    def delete_clg_question(self, index: int):
+    def delete_clg_question(self, index: int) -> Any:
         name = 'CLG_QUESTIONS'
         if not self.__data.get(name, None):
             self.__data[name] = CHAT_SETTINGS_DEFAULT[name].copy()
@@ -190,13 +191,13 @@ class chatSettings:
             return self.__data[name].pop(index)
         else:
             return False
-    def put(self, name: str, inputstr: str):
+    def put(self, name: str, inputstr: str) -> Any:
         if not inputstr:
             self.__data[name] = None
             return True
         elif name in CHAT_SETTINGS_DEFAULT:
             return self.__process(name, inputstr)
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return self.__data
 
 def challenge_gen_pw(user_id: int, join_msgid: int, real: bool = True) -> str:
@@ -380,8 +381,8 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                                             settings.choice('WELCOME_WORDS').replace(
                                             '%time%', f"{settings.get('CHALLENGE_TIMEOUT')}") + \
                                             f"\n{CLG_QUESTION}",
-                                    parse_mode="Markdown",
                                     reply_markup=InlineKeyboardMarkup(buttons),
+                                    disable_notification=True,
                                     isgroup=False) # These messages are essential and should not be delayed.
                 except TelegramError:
                     pass
@@ -495,8 +496,10 @@ def write_settings(update: Update, context: CallbackContext) -> None:
 @filter_old_updates
 def settings_menu(update: Update, context: CallbackContext, additional_text: str = '') -> None:
     chat_type: str = update.message.chat.type
-    if chat_type in ('private', 'channel'):
+    if chat_type == 'channel':
         return
+    elif chat_type == 'private':
+        update.message.reply_text('设置仅在群聊中可用', isgroup=False)
     if update.message.from_user.id in getAdminIds(context.bot, update.message.chat.id):
         buttons = [
             [InlineKeyboardButton(text=CHAT_SETTINGS_HELP[item][0], callback_data = f"settings {item}")]
@@ -527,9 +530,21 @@ def settings_callback(update: Update, context: CallbackContext) -> None:
         data: str = update.callback_query.data
 
         args: List[str] = data.split()
-        if not (args and len(args) in (2,3)):
+        if not args:
+            return
+        elif len(args) == 1:
+            # show menu
+            update.callback_query.answer()
+            buttons = [
+                [InlineKeyboardButton(text=CHAT_SETTINGS_HELP[item][0], callback_data = f"settings {item}")]
+            for item in CHAT_SETTINGS_DEFAULT]
+            message.edit_text(text="请选择一项设置",
+                              reply_markup=InlineKeyboardMarkup(buttons))
+            return
+        elif len(args) not in (2, 3):
             logger.error(f'Wrong Inline settings data length. {data}')
             update.callback_query.answer()
+            return
         else:
             if args[1] not in CHAT_SETTINGS_DEFAULT:
                 update.callback_query.answer(f'Unexpected {args[1]}')
@@ -557,7 +572,7 @@ def settings_callback(update: Update, context: CallbackContext) -> None:
                     try:
                         index = int(args[2])
                     except ValueError:
-                        logger.error(f'Upexpected CLG_QUESTIONS index {data}')
+                        logger.error(f'Unexpected CLG_QUESTIONS index {data}')
                         return
                     callback_answered = True
                     if settings.delete_clg_question(index):
@@ -569,7 +584,7 @@ def settings_callback(update: Update, context: CallbackContext) -> None:
                         current_value = settings.get(item)
                     else:
                         update.callback_query.answer('失败', show_alert=True)
-                if len(current_value) <= 10:
+                if len(current_value) < 10:
                     buttons += [[InlineKeyboardButton(text="添加新项", callback_data = f"{' '.join(args[:2])} set")]]
                 for i in range(len(current_value)):
                     name = current_value[i][0]
@@ -587,9 +602,12 @@ def settings_callback(update: Update, context: CallbackContext) -> None:
                     current_value = '\n'.join([f"备选项: {x}" for x in current_value])
                     helptext += '\n'
                 helptext += str(current_value)
+            buttons.append(
+                [InlineKeyboardButton(text='返回', callback_data='settings')]
+            )
+            helptext += '\n\n'
+            helptext += f"设置说明:\n{CHAT_SETTINGS_HELP.get(item, [None, None])[1]}\n"
             if len(args) == 3 and args[2] == 'set':
-                helptext += '\n\n'
-                helptext += f"设置说明:\n{CHAT_SETTINGS_HELP.get(item, [None, None])[1]}\n"
                 helptext += "\n您正在设置新选项\n请在120秒内回复格式正确的内容，/cancel 取消设置。"
                 context.chat_data['settings_call'] = [time(), user.id, item]
                 reply_markup = None
@@ -690,7 +708,7 @@ if __name__ == '__main__':
     else:
         from bot_backend import kick_user, restrict_user, unban_user, delete_message
     updater.job_queue.start()
-    updater.job_queue.run_repeating(do_garbage_collection, GARBAGE_COLLENTION_INTERVAL)
+    updater.job_queue.run_repeating(do_garbage_collection, GARBAGE_COLLENTION_INTERVAL, first=30)
     updater.dispatcher.add_error_handler(error_callback)
     updater.dispatcher.add_handler(CommandHandler('start', start))
     updater.dispatcher.add_handler(CommandHandler('source', source))
