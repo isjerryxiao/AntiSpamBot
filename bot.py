@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from typing import List, Any, Callable, Tuple, Set
-VER: str = 'v2.0.2'
+VER: str = 'v2.1.0'
 
 from config import (SALT, WORKERS, AT_ADMINS_RATELIMIT, STORE_CHAT_MESSAGES,
                     GARBAGE_COLLENTION_INTERVAL,
@@ -33,7 +33,7 @@ from hashlib import md5, sha256
 logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('antispambot')
 
-ppersistence = PicklePersistence(filename='antispambot.pickle', store_user_data=False)
+ppersistence = PicklePersistence(filename='antispambot.pickle', store_user_data=False, on_flush=True)
 updater = Updater(bot=mqbot, workers=WORKERS, persistence=ppersistence, use_context=True)
 
 def error_callback(update: Update, context:CallbackContext) -> None:
@@ -111,8 +111,11 @@ def start(update: Update, context: CallbackContext) -> None:
                                 '按钮验证，否则将被封禁一段时间。\n'
                                 '若该用户为群成员邀请，则邀请人也可以帮助验证。\n'
                                 '2.新加群的bot需要拉入用户或管理员确认。\n'
+                                '3.防刷屏功能: 当短时间内加入用户超过一定数量时，'
+                                '机器人会尽可能少地发送消息以防影响正常聊天。\n'
                                 '要让其正常工作，请将这个机器人添加进一个群组，'
-                                '设为管理员并打开封禁权限。'),
+                                '设为管理员并打开封禁权限。\n\n'
+                                '管理员可使用 /settings 自定义设置。'),
                               isgroup=update.message.chat.type != 'private')
     logger.debug(f"Start from {update.message.from_user.id}")
 
@@ -125,8 +128,8 @@ def source(update: Update, context: CallbackContext) -> None:
     logger.debug(f"Source from {update.message.from_user.id}")
 
 class chatSettings:
-    __data = dict()
     def __init__(self, datadict):
+        self.__data = dict()
         for k in CHAT_SETTINGS_DEFAULT:
             d = datadict.get(k, None)
             self.__data[k] = d
@@ -606,9 +609,9 @@ def settings_callback(update: Update, context: CallbackContext) -> None:
                 [InlineKeyboardButton(text='返回', callback_data='settings')]
             )
             helptext += '\n\n'
-            helptext += f"设置说明:\n{CHAT_SETTINGS_HELP.get(item, [None, None])[1]}\n"
+            helptext += f"设置说明:\n{CHAT_SETTINGS_HELP.get(item, [None, None])[1]}"
             if len(args) == 3 and args[2] == 'set':
-                helptext += "\n您正在设置新选项\n请在120秒内回复格式正确的内容，/cancel 取消设置。"
+                helptext += "\n\n您正在设置新选项\n请在120秒内回复格式正确的内容，/cancel 取消设置。"
                 context.chat_data['settings_call'] = [time(), user.id, item]
                 reply_markup = None
             else:
