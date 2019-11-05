@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from typing import List, Any, Callable, Tuple, Set
-VER: str = 'v2.1.0'
+VER: str = 'v2.1.1'
 
 from config import (SALT, WORKERS, AT_ADMINS_RATELIMIT, STORE_CHAT_MESSAGES,
                     GARBAGE_COLLENTION_INTERVAL,
@@ -25,7 +25,7 @@ from telegram.error import (TelegramError, Unauthorized, BadRequest,
                             TimedOut, ChatMigrated, NetworkError)
 
 from mwt import MWT
-from utils import print_traceback
+from utils import print_traceback, find_cjk_letters
 from random import choice, randint, shuffle
 from hashlib import md5, sha256
 
@@ -346,11 +346,11 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
         '''
         shuffle(buttons)
         output = [list(),]
-        LENGTH_PER_LINE = 16
+        LENGTH_PER_LINE = 20
         MAXIMUM_PER_LINE = 4
         clength = LENGTH_PER_LINE
         for btn in buttons:
-            l = len(btn.text)
+            l = len(btn.text) + len(find_cjk_letters(btn.text)) # cjk letters has a length of 2
             clength -= l
             if clength < 0 or len(output[-1]) >= MAXIMUM_PER_LINE:
                 clength = LENGTH_PER_LINE - l
