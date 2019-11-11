@@ -258,7 +258,7 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
         (_, join_msgid, bot_invite_uid, bot_clg_msg_id) = d_user
         if not bot_uid:
             naughty_user = False
-        elif user.id in (bot_invite_uid, r_user_id) or user.id in getAdminIds(bot, chat_id):
+        elif user.id in (bot_invite_uid, r_user_id, *(getAdminIds(bot, chat_id))):
             naughty_user = False
         else:
             if r_user_id != user.id and rest_users.get(user.id, None):
