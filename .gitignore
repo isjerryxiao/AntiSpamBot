@@ -1,2 +1,5 @@
-*.pickle
+__pycache__/
+*.py[cod]
 config.py
+*.pickle
+*.session
