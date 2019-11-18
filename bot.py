@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from typing import List, Any, Callable, Tuple, Set
-VER: str = 'v2.1.2'
+VER: str = 'v2.2.0'
 
 from config import (SALT, WORKERS, AT_ADMINS_RATELIMIT, STORE_CHAT_MESSAGES,
-                    GARBAGE_COLLENTION_INTERVAL,
+                    GARBAGE_COLLECTION_INTERVAL, PICKLE_FILE,
                     CHAT_SETTINGS as CHAT_SETTINGS_DEFAULT, CHAT_SETTINGS_HELP,
                     USER_BOT_BACKEND, DEBUG)
 assert not [k for k in CHAT_SETTINGS_DEFAULT if k not in CHAT_SETTINGS_HELP]
@@ -33,7 +33,7 @@ from hashlib import md5, sha256
 logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('antispambot')
 
-ppersistence = PicklePersistence(filename='antispambot.pickle', store_user_data=False, on_flush=True)
+ppersistence = PicklePersistence(filename=PICKLE_FILE, store_user_data=False, on_flush=True)
 updater = Updater(bot=mqbot, workers=WORKERS, persistence=ppersistence, use_context=True)
 
 def error_callback(update: Update, context:CallbackContext) -> None:
@@ -258,7 +258,7 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
         (_, join_msgid, bot_invite_uid, bot_clg_msg_id) = d_user
         if not bot_uid:
             naughty_user = False
-        elif user.id in (bot_invite_uid, r_user_id, *(getAdminIds(bot, chat_id))):
+        elif user.id in (bot_invite_uid, r_user_id, *(adminids := getAdminIds(bot, chat_id))):
             naughty_user = False
         else:
             if r_user_id != user.id and rest_users.get(user.id, None):
@@ -290,11 +290,14 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
         else:
             captcha_corrent = False
         if not captcha_corrent:
-            kick_user(context, chat_id, r_user_id, 'Challange failed')
+            if (kick_by_admin := user.id in adminids):
+                bot.answer_callback_query(callback_query_id=update.callback_query.id,
+                                          text='Banned permanently',
+                                          show_alert=True)
+            kick_user(context, chat_id, r_user_id, 'Kicked by admin' if kick_by_admin else 'Challange failed')
             def then_unban(_: CallbackContext) -> None:
                 unban_user(context, chat_id, r_user_id, reason='Unban timeout reached.')
-            UNBAN_TIMEOUT = settings.get('UNBAN_TIMEOUT')
-            if UNBAN_TIMEOUT > 0:
+            if not kick_by_admin and (UNBAN_TIMEOUT := settings.get('UNBAN_TIMEOUT')) > 0:
                 context.job_queue.run_once(then_unban, UNBAN_TIMEOUT, name='unban_job')
             rest_users.pop(r_user_id)
             # delete messages
@@ -308,14 +311,14 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
         else:
             unban_user(context, chat_id, r_user_id, reason='Challenge passed.')
             bot.answer_callback_query(callback_query_id=update.callback_query.id,
-                                    text=settings.choice('CHALLENGE_SUCCESS'),
-                                    show_alert=True)
+                                      text=settings.choice('CHALLENGE_SUCCESS'),
+                                      show_alert=True)
             rest_users.pop(r_user_id)
             if bot_uid or len(rest_users) == 0:
                 delete_message(context, chat_id=chat_id, message_id=message_id)
 
     else:
-        logger.info((f"Naughty user {fName(user, markdown=False)} (id: {user.id}) clicked a button"
+        logger.info((f"Naughty user {fName(user, markdown=False)} {user.id=} clicked a button"
                      f" from the group {chat_id}"))
         bot.answer_callback_query(callback_query_id=update.callback_query.id,
                                   text=settings.choice('PERMISSION_DENY'),
@@ -409,8 +412,7 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                 def then_unban(_: CallbackContext) -> None:
                     unban_user(context, chat_id, user.id, reason='Unban timeout reached.')
                 if kick_user(context, chat_id, user.id, reason='Challange timeout.'):
-                    UNBAN_TIMEOUT = settings.get('UNBAN_TIMEOUT')
-                    if UNBAN_TIMEOUT > 0:
+                    if (UNBAN_TIMEOUT := settings.get('UNBAN_TIMEOUT')) > 0:
                         context.job_queue.run_once(then_unban, UNBAN_TIMEOUT, name='unban_job')
                 rest_users.pop(user.id)
                 # delete messages
@@ -421,8 +423,7 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                 if not flag_flooding:
                     delete_message(context, chat_id=chat_id, message_id=msg.message_id)
                 delete_message(context, chat_id=chat_id, message_id=join_msgid)
-            CHALLENGE_TIMEOUT = settings.get('CHALLENGE_TIMEOUT')
-            if CHALLENGE_TIMEOUT > 0:
+            if (CHALLENGE_TIMEOUT := settings.get('CHALLENGE_TIMEOUT')) > 0:
                 context.job_queue.run_once(kick_then_unban, CHALLENGE_TIMEOUT,
                                            name=challange_hash(user.id, chat_id, join_msgid))
         else:
@@ -545,7 +546,7 @@ def settings_callback(update: Update, context: CallbackContext) -> None:
                               reply_markup=InlineKeyboardMarkup(buttons))
             return
         elif len(args) not in (2, 3):
-            logger.error(f'Wrong Inline settings data length. {data}')
+            logger.error(f'Wrong Inline settings data length. {data=}')
             update.callback_query.answer()
             return
         else:
@@ -575,7 +576,7 @@ def settings_callback(update: Update, context: CallbackContext) -> None:
                     try:
                         index = int(args[2])
                     except ValueError:
-                        logger.error(f'Unexpected CLG_QUESTIONS index {data}')
+                        logger.error(f'Unexpected CLG_QUESTIONS index {data=}')
                         return
                     callback_answered = True
                     if settings.delete_clg_question(index):
@@ -645,7 +646,7 @@ def new_messages(update: Update, context: CallbackContext) -> None:
 @run_async
 @collect_error
 @filter_old_updates
-def new_mems(update: Update, context: CallbackContext) -> None:
+def new_members(update: Update, context: CallbackContext) -> None:
     chat_type: str = update.message.chat.type
     if chat_type in ('private', 'channel'):
         return
@@ -711,7 +712,7 @@ if __name__ == '__main__':
     else:
         from bot_backend import kick_user, restrict_user, unban_user, delete_message
     updater.job_queue.start()
-    updater.job_queue.run_repeating(do_garbage_collection, GARBAGE_COLLENTION_INTERVAL, first=30)
+    updater.job_queue.run_repeating(do_garbage_collection, GARBAGE_COLLECTION_INTERVAL, first=30)
     updater.dispatcher.add_error_handler(error_callback)
     updater.dispatcher.add_handler(CommandHandler('start', start))
     updater.dispatcher.add_handler(CommandHandler('source', source))
@@ -721,7 +722,7 @@ if __name__ == '__main__':
     updater.dispatcher.add_handler(CommandHandler('cancel', settings_cancel))
     updater.dispatcher.add_handler(CallbackQueryHandler(challenge_verification, pattern=r'clg'))
     updater.dispatcher.add_handler(CallbackQueryHandler(settings_callback, pattern=r'settings'))
-    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_members, new_mems))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_members, new_members))
     updater.dispatcher.add_handler(MessageHandler(InvertedFilter(Filters.status_update), new_messages))
     if USER_BOT_BACKEND:
         logger.info('Antispambot started with userbot backend.')

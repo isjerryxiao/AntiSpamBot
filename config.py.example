@@ -8,7 +8,8 @@ AT_ADMINS_RATELIMIT: int = 5*60
 # send messages before the bot restricts them
 STORE_CHAT_MESSAGES: int = 100
 # do garbage collection every 86400 seconds
-GARBAGE_COLLENTION_INTERVAL: int = 86400
+GARBAGE_COLLECTION_INTERVAL: int = 86400
+PICKLE_FILE: str = 'antispambot.pickle'
 
 # These options can be changed per group
 CHAT_SETTINGS = {
