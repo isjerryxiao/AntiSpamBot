@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from typing import List, Any, Callable, Tuple, Set
-VER: str = 'v2.2.0'
 
 from config import (SALT, WORKERS, AT_ADMINS_RATELIMIT, STORE_CHAT_MESSAGES,
                     GARBAGE_COLLECTION_INTERVAL, PICKLE_FILE,
@@ -32,6 +31,21 @@ from hashlib import md5, sha256
 
 logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('antispambot')
+
+import subprocess
+def get_gitver() -> str:
+    try:
+        p = subprocess.run(['git', 'describe', '--tags'],
+                        env={"LANG": "C"},
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        encoding='utf-8')
+        assert p.returncode == 0
+        ver: str = p.stdout.strip()
+    except Exception:
+        ver: str = "Unknown"
+    return ver
+VER: str = get_gitver()
 
 ppersistence = PicklePersistence(filename=PICKLE_FILE, store_user_data=False, on_flush=True)
 updater = Updater(bot=mqbot, workers=WORKERS, persistence=ppersistence, use_context=True)
@@ -723,7 +737,8 @@ if __name__ == '__main__':
     updater.dispatcher.add_handler(CallbackQueryHandler(challenge_verification, pattern=r'clg'))
     updater.dispatcher.add_handler(CallbackQueryHandler(settings_callback, pattern=r'settings'))
     updater.dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_members, new_members))
-    updater.dispatcher.add_handler(MessageHandler(InvertedFilter(Filters.status_update), new_messages))
+    updater.dispatcher.add_handler(MessageHandler(InvertedFilter(Filters.status_update & \
+                                                  Filters.update.channel_posts), new_messages))
     if USER_BOT_BACKEND:
         logger.info('Antispambot started with userbot backend.')
         try:
