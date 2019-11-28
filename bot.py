@@ -518,6 +518,7 @@ def settings_menu(update: Update, context: CallbackContext, additional_text: str
         return
     elif chat_type == 'private':
         update.message.reply_text('设置仅在群聊中可用', isgroup=False)
+        return
     if update.message.from_user.id in getAdminIds(context.bot, update.message.chat.id):
         buttons = [
             [InlineKeyboardButton(text=CHAT_SETTINGS_HELP[item][0], callback_data = f"settings {item}")]
