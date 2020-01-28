@@ -27,6 +27,7 @@ from mwt import MWT
 from utils import print_traceback, find_cjk_letters
 from random import choice, randint, shuffle
 from hashlib import md5, sha256
+from threading import Lock
 
 
 logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -39,6 +40,7 @@ def get_gitver() -> str:
                         env={"LANG": "C"},
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
                         encoding='utf-8')
         assert p.returncode == 0
         ver: str = p.stdout.strip()
@@ -46,9 +48,6 @@ def get_gitver() -> str:
         ver: str = "Unknown"
     return ver
 VER: str = get_gitver()
-
-ppersistence = PicklePersistence(filename=PICKLE_FILE, store_user_data=False, on_flush=True)
-updater = Updater(bot=mqbot, workers=WORKERS, persistence=ppersistence, use_context=True)
 
 def error_callback(update: Update, context:CallbackContext) -> None:
     error: Exception = context.error
@@ -217,6 +216,53 @@ class chatSettings:
     def to_dict(self) -> dict:
         return self.__data
 
+FLD_LOCKS = dict()
+class restUser:
+    def __init__(self, user_id: int, join_msgid: int, uinvite_id: int, flooding: bool = False):
+        self.user_id = user_id
+        self.join_msgid = join_msgid
+        self.uinvite_id = uinvite_id
+        self.flooding = flooding
+        self.time = int(time())
+class UserManager:
+    def __init__(self, chat_id: int) -> None:
+        self._cver = self.ver
+        self._chat_id = chat_id
+        self._nfusers = dict()
+        self._fldusers = dict()
+
+        self.fldmsg_id = None
+        self.fldmsg_callbacks = [None, ]
+    @property
+    def ver(self):
+        return '0.0.1'
+    def add(self, ruser: restUser) -> None:
+        if self._nfusers.pop(ruser.user_id, None):
+            logger.debug(f'User {ruser.user_id} is already in nfusers, chat {self._chat_id}')
+        if self._fldusers.pop(ruser.user_id, None):
+            logger.debug(f'User {ruser.user_id} is already in fldusers, chat {self._chat_id}')
+        if ruser.flooding:
+            self._fldusers[ruser.user_id] = ruser
+        else:
+            self._nfusers[ruser.user_id] = ruser
+    def get(self, user_id: int) -> restUser:
+        return self.__get_pop(0, user_id)
+    def pop(self, user_id: int) -> restUser:
+        return self.__get_pop(1, user_id)
+    def __len__(self):
+        return len(self._nfusers) + len(self._fldusers)
+    def __get_pop(self, action: int, user_id: int) -> restUser:
+        us = (self._fldusers, self._nfusers)
+        if action == 0:
+            for u in us:
+                if (ret := u.get(user_id, None)):
+                    return ret
+        elif action == 1:
+            for u in us:
+                if (ret := u.pop(user_id, None)):
+                    return ret
+        return None
+
 def challenge_gen_pw(user_id: int, join_msgid: int, real: bool = True) -> str:
     if real:
         action = 'pass'
@@ -242,8 +288,8 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
     user: User = update.callback_query.from_user
     message_id: int = update.callback_query.message.message_id
     data: str = update.callback_query.data
-    my_msg = context.chat_data.setdefault('my_msg', [None, [None,]]) # [msgid, [CorrectCallback, FakeCallback, ..]]
-    rest_users = context.chat_data.setdefault('rest_users', dict()) # {user_id: [int(time), join_msgid, bot_invite_uid]}
+    fldlock: Lock = FLD_LOCKS.setdefault(chat_id, Lock())
+    u_mgr: UserManager = context.chat_data.setdefault('u_mgr', UserManager(chat_id))
     settings = chatSettings(context.chat_data.get('chat_settings', dict()))
     if not data:
         logger.error('Empty Inline challenge data.')
@@ -254,57 +300,74 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
     if not (args and len(args) == 3):
         logger.error(f'Wrong Inline challenge data length. {data}')
         return
-    (btn_callback, bot_uid) = args[1:]
-    # bot_uid is '' if the restricted user is not a bot
-    if bot_uid:
+    (btn_callback, invite_ruid) = args[1:]
+    # invite_ruid is '' if the restricted user is not a bot
+    if invite_ruid:
         try:
-            r_user_id = int(bot_uid)
+            r_user_id = int(invite_ruid)
         except ValueError:
-            logger.error(f'Bad bot_uid, {data}')
+            logger.error(f'Bad invite_uid, {data}')
             bot.answer_callback_query(callback_query_id=update.callback_query.id, text="Fail")
             return
     else:
         r_user_id = user.id
-    d_user = rest_users.get(r_user_id, None)
-    if type(d_user) is not tuple:
+    rest_user: restUser = u_mgr.get(r_user_id)
+
+    naughty_user: bool = False
+    flooding: bool = False
+    wrong_captcha: bool = False
+
+    if not rest_user:
         naughty_user = True
     else:
-        (_, join_msgid, bot_invite_uid, bot_clg_msg_id) = d_user
-        if not bot_uid:
-            naughty_user = False
-        elif user.id in (bot_invite_uid, r_user_id, *(adminids := getAdminIds(bot, chat_id))):
+        if invite_ruid:
+            if not rest_user.flooding:
+                flooding = False
+            else:
+                wrong_captcha = True # ??
+        else:
+            if rest_user.flooding:
+                flooding = True
+            else:
+                wrong_captcha = True
+
+        if wrong_captcha:
+            bot.answer_callback_query(callback_query_id=update.callback_query.id, text="Not your captcha")
+            return
+
+        if flooding:
             naughty_user = False
         else:
-            if r_user_id != user.id and rest_users.get(user.id, None):
-                # This user clicked the wrong message
-                bot.answer_callback_query(callback_query_id=update.callback_query.id, text="Not your captcha")
-                return
+            if user.id in (rest_user.uinvite_id, rest_user.user_id, *(adminids := getAdminIds(bot, chat_id))):
+                naughty_user = False
             else:
                 naughty_user = True
+
     if not naughty_user:
         # Remove old job first, then take action
         if settings.get('CHALLENGE_TIMEOUT') > 0:
-            mjobs: tuple = context.job_queue.get_jobs_by_name(challange_hash(r_user_id, chat_id, join_msgid))
+            mjobs: tuple = context.job_queue.get_jobs_by_name(challange_hash(rest_user.user_id, chat_id, rest_user.join_msgid))
             if len(mjobs) == 1:
                 mjob: Job = mjobs[0]
                 mjob.schedule_removal()
             else:
-                logger.error(f'There is no pending job for {r_user_id} in the group {chat_id}')
+                logger.error(f'There is no pending job for {rest_user.user_id} in the group {chat_id}')
                 if DEBUG:
                     try:
                         raise Exception
                     except Exception:
                         print_traceback(debug=DEBUG)
-        my_msg_id = my_msg[0]
-        # whether the captchais correct or not
-        if data == my_msg[1][0]:
+
+        # whether the captcha is correct or not
+        if data == u_mgr.fldmsg_callbacks[0]:
             captcha_corrent = True
-        elif bot_uid and btn_callback == challenge_gen_pw(r_user_id, join_msgid):
+        elif not flooding and btn_callback == challenge_gen_pw(rest_user.user_id, rest_user.join_msgid):
             captcha_corrent = True
         else:
             captcha_corrent = False
+
         if not captcha_corrent:
-            if (kick_by_admin := user.id in adminids):
+            if (kick_by_admin := not flooding and user.id in adminids):
                 bot.answer_callback_query(callback_query_id=update.callback_query.id,
                                           text='Banned permanently',
                                           show_alert=True)
@@ -313,23 +376,24 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
                 unban_user(context, chat_id, r_user_id, reason='Unban timeout reached.')
             if not kick_by_admin and (UNBAN_TIMEOUT := settings.get('UNBAN_TIMEOUT')) > 0:
                 context.job_queue.run_once(then_unban, UNBAN_TIMEOUT, name='unban_job')
-            rest_users.pop(r_user_id)
-            # delete messages
-            if len(rest_users) == 0 and my_msg_id:
-                delete_message(context, chat_id=chat_id, message_id=my_msg_id)
-                if my_msg_id == my_msg[0]:
-                    my_msg[0] = None
-            if bot_clg_msg_id:
-                delete_message(context, chat_id=chat_id, message_id=bot_clg_msg_id)
-            delete_message(context, chat_id=chat_id, message_id=join_msgid)
         else:
             unban_user(context, chat_id, r_user_id, reason='Challenge passed.')
             bot.answer_callback_query(callback_query_id=update.callback_query.id,
                                       text=settings.choice('CHALLENGE_SUCCESS'),
                                       show_alert=True)
-            rest_users.pop(r_user_id)
-            if bot_uid or len(rest_users) == 0:
-                delete_message(context, chat_id=chat_id, message_id=message_id)
+        # delete messages
+        u_mgr.pop(rest_user.user_id)
+        if flooding:
+            fldlock.acquire()
+            try:
+                if len(u_mgr._fldusers) == 0 and u_mgr.fldmsg_id:
+                    delete_message(context, chat_id=chat_id, message_id=u_mgr.fldmsg_id)
+                    u_mgr.fldmsg_id = None
+            finally:
+                fldlock.release()
+        else:
+            delete_message(context, chat_id=chat_id, message_id=message_id)
+        delete_message(context, chat_id=chat_id, message_id=rest_user.join_msgid)
 
     else:
         logger.info((f"Naughty user {fName(user, markdown=False)} {user.id=} clicked a button"
@@ -340,8 +404,8 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
 
 def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
     bot: Bot = context.bot
-    my_msg = context.chat_data.setdefault('my_msg', [None, [None,]]) # [msgid, [CorrectCallback, FakeCallback, ..]]
-    rest_users = context.chat_data.setdefault('rest_users', dict()) # {user_id: [int(time), join_msgid, bot_invite_uid]}
+    fldlock: Lock = FLD_LOCKS.setdefault(chat_id, Lock())
+    u_mgr: UserManager = context.chat_data.setdefault('u_mgr', UserManager(chat_id))
     settings = chatSettings(context.chat_data.get('chat_settings', dict()))
     (CLG_QUESTION, CLG_ACCEPT, CLG_DENY) = settings.get_clg_accecpt_deny()
     # flooding protection
@@ -351,12 +415,11 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
     elif FLOOD_LIMIT == 1:
         flag_flooding = True
     else:
-        if len(rest_users) + 1 >= FLOOD_LIMIT:
+        if len(u_mgr) + 1 >= FLOOD_LIMIT:
             flag_flooding = True
         else:
             flag_flooding = False
     flag_flooding = flag_flooding and not user.is_bot
-    my_msg_id = my_msg[0]
     def organize_btns(buttons: List[InlineKeyboardButton]) -> List[List[InlineKeyboardButton]]:
         '''
             Shuffle buttons and put them into a 2d array
@@ -378,44 +441,49 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
     try:
         if restrict_user(context, chat_id=chat_id, user_id=user.id, extra=((' [flooding]' if flag_flooding else '') + \
                                                                            (' [bot]' if user.is_bot else ''))):
-            if my_msg[0] and flag_flooding:
-                logger.debug(f'Deleting flooding captcha {my_msg[0]} in {chat_id}')
-                delete_message(context, chat_id, my_msg[0])
-            buttons = [
-                InlineKeyboardButton(text=CLG_ACCEPT, callback_data = (\
-                    f"clg {challenge_gen_pw(user.id, join_msgid)}" + \
-                   (f" {user.id}" if not flag_flooding else ''))),
-                *[InlineKeyboardButton(text=fake_btn_text, callback_data = (\
-                    f"clg {challenge_gen_pw(user.id, join_msgid, real=False)}" + \
-                   (f" {user.id}" if not flag_flooding else '')))
-                for fake_btn_text in CLG_DENY]
-            ]
-            callback_datalist = [btn.callback_data for btn in buttons]
-            buttons = organize_btns(buttons)
-            for _ in range(3):
-                try:
-                    msg: Message = bot.send_message(chat_id=chat_id,
-                                    reply_to_message_id=join_msgid,
-                                    text=('' if not flag_flooding else \
-                                                f'待验证用户: {len(rest_users)+1}名\n') + \
-                                            settings.choice('WELCOME_WORDS').replace(
-                                            '%time%', f"{settings.get('CHALLENGE_TIMEOUT')}") + \
-                                            f"\n{CLG_QUESTION}",
-                                    reply_markup=InlineKeyboardMarkup(buttons),
-                                    disable_notification=True,
-                                    isgroup=False) # These messages are essential and should not be delayed.
-                except TelegramError:
-                    pass
-                else:
-                    break
-            else:
-                raise TelegramError(f'Send challenge message failed 3 times for {user.id}')
             if flag_flooding:
-                my_msg[0] = msg.message_id
-                my_msg[1] = callback_datalist
-            bot_invite_uid = None if flag_flooding else invite_user.id
-            bot_clg_msg_id = None if flag_flooding else msg.message_id
-            rest_users[user.id] = (int(time()), join_msgid, bot_invite_uid, bot_clg_msg_id)
+                fldlock.acquire()
+            try:
+                if u_mgr.fldmsg_id and flag_flooding:
+                    logger.debug(f'Deleting flooding captcha {u_mgr.fldmsg_id} in {chat_id}')
+                    delete_message(context, chat_id, u_mgr.fldmsg_id)
+                buttons = [
+                    InlineKeyboardButton(text=CLG_ACCEPT, callback_data = (\
+                        f"clg {challenge_gen_pw(user.id, join_msgid)}" + \
+                    (f" {user.id}" if not flag_flooding else ''))),
+                    *[InlineKeyboardButton(text=fake_btn_text, callback_data = (\
+                        f"clg {challenge_gen_pw(user.id, join_msgid, real=False)}" + \
+                    (f" {user.id}" if not flag_flooding else '')))
+                    for fake_btn_text in CLG_DENY]
+                ]
+                callback_datalist = [btn.callback_data for btn in buttons]
+                buttons = organize_btns(buttons)
+                for _ in range(3):
+                    try:
+                        msg: Message = bot.send_message(chat_id=chat_id,
+                                        reply_to_message_id=join_msgid,
+                                        text=('' if not flag_flooding else \
+                                                    f'待验证用户: {len(u_mgr)+1}名\n') + \
+                                                settings.choice('WELCOME_WORDS').replace(
+                                                '%time%', f"{settings.get('CHALLENGE_TIMEOUT')}") + \
+                                                f"\n{CLG_QUESTION}",
+                                        reply_markup=InlineKeyboardMarkup(buttons),
+                                        disable_notification=True,
+                                        isgroup=False) # These messages are essential and should not be delayed.
+                    except TelegramError:
+                        pass
+                    else:
+                        break
+                else:
+                    raise TelegramError(f'Send challenge message failed 3 times for {user.id}')
+                if flag_flooding:
+                    u_mgr.fldmsg_id = msg.message_id
+                    u_mgr.fldmsg_callbacks = callback_datalist
+                bot_invite_uid = None if flag_flooding else invite_user.id
+                u_mgr.add(restUser(user.id, join_msgid, bot_invite_uid, flooding=flag_flooding))
+            finally:
+                if flag_flooding:
+                    fldlock.release()
             # User restricted and buttons sent, now search for this user's previous messages and delete them
             sto_msgs: List[Tuple[int, int, int]] = context.chat_data.get('stored_messages', list())
             msgids_to_delete: Set[int] = set([u_m_t[1] for u_m_t in sto_msgs if u_m_t[0] == user.id])
@@ -428,13 +496,17 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                 if kick_user(context, chat_id, user.id, reason='Challange timeout.'):
                     if (UNBAN_TIMEOUT := settings.get('UNBAN_TIMEOUT')) > 0:
                         context.job_queue.run_once(then_unban, UNBAN_TIMEOUT, name='unban_job')
-                rest_users.pop(user.id)
+                u_mgr.pop(user.id)
                 # delete messages
-                if len(rest_users) == 0 and my_msg_id:
-                    delete_message(context, chat_id=chat_id, message_id=my_msg_id)
-                    if my_msg_id == my_msg[0]:
-                        my_msg[0] = None
-                if not flag_flooding:
+                if flag_flooding:
+                    fldlock.acquire()
+                    try:
+                        if len(u_mgr) == 0 and u_mgr.fldmsg_id:
+                            delete_message(context, chat_id=chat_id, message_id=u_mgr.fldmsg_id)
+                            u_mgr.fldmsg_id = None
+                    finally:
+                        fldlock.release()
+                else:
                     delete_message(context, chat_id=chat_id, message_id=msg.message_id)
                 delete_message(context, chat_id=chat_id, message_id=join_msgid)
             if (CHALLENGE_TIMEOUT := settings.get('CHALLENGE_TIMEOUT')) > 0:
@@ -646,22 +718,24 @@ def settings_callback(update: Update, context: CallbackContext) -> None:
 @collect_error
 @filter_old_updates
 def new_messages(update: Update, context: CallbackContext) -> None:
-    if not (update.effective_user and update.effective_message):
+    if not (update.effective_user and update.effective_message and update.effective_message.chat):
         return
-    chat_type: str = update.message.chat.type
+    chat_type: str = update.effective_message.chat.type
     if chat_type in ('private', 'channel'):
         return
     sto_msgs: List[Tuple[int, int, int]] = context.chat_data.setdefault('stored_messages', list())
     sto_msgs.append((update.effective_user.id, update.effective_message.message_id, int(time())))
     while len(sto_msgs) > STORE_CHAT_MESSAGES:
         sto_msgs.pop(0)
-    if update.message.text:
+    if update.message and update.message.text:
         write_settings(update, context)
 
 @run_async
 @collect_error
 @filter_old_updates
 def new_members(update: Update, context: CallbackContext) -> None:
+    if not (update.message and update.message.chat):
+        return
     chat_type: str = update.message.chat.type
     if chat_type in ('private', 'channel'):
         return
@@ -688,18 +762,32 @@ def do_garbage_collection(context: CallbackContext) -> None:
     u_checked: int = 0
     m_checked: int = 0
     all_chat_data = updater.dispatcher.chat_data
+    logger.debug('gc: check for abandoned keys')
     for chat_id in all_chat_data:
-        rest_users = all_chat_data[chat_id].get('rest_users', None)
-        if type(rest_users) is dict:
-            for uid in [k for k in rest_users]:
-                try:
+        for key in [k for k in all_chat_data[chat_id]]:
+            if key in ('my_msg', 'rest_users'):
+                d = all_chat_data[chat_id].pop(key, None)
+                logger.warning(f'Update pickle: Removed {{{key}: {d}}} for {chat_id}')
+    logger.debug('gc: reinit old versions of u_mgr')
+    for chat_id in all_chat_data:
+        u_mgr: UserManager = all_chat_data[chat_id].get('u_mgr', None)
+        if u_mgr and u_mgr._cver != u_mgr.ver:
+            all_chat_data[chat_id].pop('u_mgr', None)
+            logger.warning(f'Update u_mgr: reinit {u_mgr._cver} to {u_mgr.ver} for {chat_id}')
+            del u_mgr
+    logger.debug('gc: check for outdated rest_users and sto_msgs')
+    for chat_id in all_chat_data:
+        u_mgr: UserManager = all_chat_data[chat_id].get('u_mgr', None)
+        if u_mgr:
+            for _ulist in (u_mgr._nfusers, u_mgr._fldusers):
+                for k in (_culist := _ulist.copy()):
                     u_checked += 1
-                    if int(time()) - rest_users[uid][0] > 7200:
+                    _u = _culist.get(k, None)
+                    t = _u.time if _u else 0
+                    if int(time()) - t > 7200:
+                        _ulist.pop(k, None)
                         u_freed += 1
-                        rest_users.pop(uid)
-                except Exception:
-                    print_traceback(debug=DEBUG)
-        sto_msgs = all_chat_data[chat_id].get('stored_messages', None)
+        sto_msgs: list = all_chat_data[chat_id].get('stored_messages', None)
         if type(sto_msgs) is list:
             to_rm = list()
             try:
@@ -721,13 +809,16 @@ def do_garbage_collection(context: CallbackContext) -> None:
                  f'freed {u_freed} users, {m_freed} messages.'))
 
 if __name__ == '__main__':
+    ppersistence = PicklePersistence(filename=PICKLE_FILE, store_user_data=False, on_flush=True)
+    updater = Updater(bot=mqbot, workers=WORKERS, persistence=ppersistence, use_context=True)
+
     if USER_BOT_BACKEND:
         from userbot_backend import (kick_user, restrict_user, unban_user, delete_message,
                                      userbot_updater)
     else:
         from bot_backend import kick_user, restrict_user, unban_user, delete_message
     updater.job_queue.start()
-    updater.job_queue.run_repeating(do_garbage_collection, GARBAGE_COLLECTION_INTERVAL, first=30)
+    updater.job_queue.run_repeating(do_garbage_collection, GARBAGE_COLLECTION_INTERVAL, first=5)
     updater.dispatcher.add_error_handler(error_callback)
     updater.dispatcher.add_handler(CommandHandler('start', start))
     updater.dispatcher.add_handler(CommandHandler('source', source))
