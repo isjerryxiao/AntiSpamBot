@@ -351,7 +351,9 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
                 mjob: Job = mjobs[0]
                 mjob.schedule_removal()
             else:
-                logger.error(f'There is no pending job for {rest_user.user_id} in the group {chat_id}')
+                for mjob in mjobs:
+                    mjob.schedule_removal()
+                logger.error(f'There is {len(mjobs)} pending job(s) for {rest_user.user_id} in the group {chat_id}')
                 if DEBUG:
                     try:
                         raise Exception
@@ -393,7 +395,8 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
                 fldlock.release()
         else:
             delete_message(context, chat_id=chat_id, message_id=message_id)
-        delete_message(context, chat_id=chat_id, message_id=rest_user.join_msgid)
+        if not captcha_corrent:
+            delete_message(context, chat_id=chat_id, message_id=rest_user.join_msgid)
 
     else:
         logger.info((f"Naughty user {fName(user, markdown=False)} {user.id=} clicked a button"
