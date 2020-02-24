@@ -489,7 +489,7 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                     fldlock.release()
             # User restricted and buttons sent, now search for this user's previous messages and delete them
             sto_msgs: List[Tuple[int, int, int]] = context.chat_data.get('stored_messages', list())
-            msgids_to_delete: Set[int] = set([u_m_t[1] for u_m_t in sto_msgs if u_m_t[0] == user.id])
+            msgids_to_delete: Set[int] = set([u_m_t[1] for u_m_t in sto_msgs if u_m_t[0] == user.id and int(u_m_t[1]) > int(join_msgid)])
             for _mid in msgids_to_delete:
                 delete_message(context, chat_id, _mid)
             # kick them after timeout
