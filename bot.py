@@ -128,7 +128,8 @@ def start(update: Update, context: CallbackContext) -> None:
                                 '机器人会尽可能少地发送消息以防影响正常聊天。\n'
                                 '要让其正常工作，请将这个机器人添加进一个群组，'
                                 '设为管理员并打开封禁权限。\n\n'
-                                '管理员可使用 /settings 自定义设置。'),
+                                '管理员可使用 /settings 自定义设置。\n'
+                                '使用 /ban 封禁用户。'),
                               isgroup=update.message.chat.type != 'private')
     logger.debug(f"Start from {update.message.from_user.id}")
 
@@ -285,6 +286,8 @@ def challange_hash(user_id: int, chat_id: int, join_msgid: int) -> str:
 @collect_error
 def ban_user(update: Update, context: CallbackContext) -> None:
     if not update.message:
+        return
+    if update.effective_chat.type in ('private', 'channel'):
         return
     if update.message.from_user.id not in getAdminIds(context.bot, update.message.chat.id):
         return
