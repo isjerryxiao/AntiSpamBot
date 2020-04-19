@@ -218,9 +218,10 @@ class chatSettings:
 
 FLD_LOCKS = dict()
 class restUser:
-    def __init__(self, user_id: int, join_msgid: int, uinvite_id: int, flooding: bool = False):
+    def __init__(self, user_id: int, join_msgid: int, clg_msgid: int, uinvite_id: int, flooding: bool = False):
         self.user_id = user_id
         self.join_msgid = join_msgid
+        self.clg_msgid = clg_msgid
         self.uinvite_id = uinvite_id
         self.flooding = flooding
         self.time = int(time())
@@ -235,7 +236,7 @@ class UserManager:
         self.fldmsg_callbacks = [None, ]
     @property
     def ver(self):
-        return '0.0.1'
+        return '0.0.2'
     def add(self, ruser: restUser) -> None:
         if self._nfusers.pop(ruser.user_id, None):
             logger.debug(f'User {ruser.user_id} is already in nfusers, chat {self._chat_id}')
@@ -282,6 +283,87 @@ def challange_hash(user_id: int, chat_id: int, join_msgid: int) -> str:
 
 @run_async
 @collect_error
+def ban_user(update: Update, context: CallbackContext) -> None:
+    if not update.message:
+        return
+    if update.message.from_user.id not in getAdminIds(context.bot, update.message.chat.id):
+        return
+    if not (repl_msg := update.message.reply_to_message):
+        update.message.reply_text("Please reply to a message.")
+        return
+    if repl_msg.new_chat_members:
+        user_ids = [user.id for user in repl_msg.new_chat_members]
+    else:
+        if repl_msg.from_user.id == context.bot.id:
+            # trying to be user friendly but reqiures a lot more code :(
+            try:
+                assert (rmarkup := repl_msg.reply_markup) and (kbd := rmarkup.inline_keyboard) \
+                    and type((btn := kbd[0][0])) is InlineKeyboardButton and (data := btn.callback_data)
+                assert data.startswith('clg ')
+                data = data.split(' ')
+                if not len(data) in (3,4):
+                    raise RuntimeError
+                user_ids = [int(data[1]),]
+            except AssertionError:
+                user_ids = list()
+            except Exception:
+                user_ids = list()
+                print_traceback(debug=DEBUG)
+        else:
+            user_ids = [repl_msg.from_user.id,]
+    chat_id: int = update.message.chat.id
+    user_ids: List[int] = [uid for uid in user_ids if uid not in getAdminIds(context.bot, chat_id)]
+    if not user_ids:
+        update.message.reply_text("Cannot ban an admin.")
+        return
+    u_mgr: UserManager = context.chat_data.setdefault('u_mgr', UserManager(chat_id))
+    fldlock: Lock = FLD_LOCKS.setdefault(chat_id, Lock())
+    for user_id in user_ids:
+        rest_user = u_mgr.get(user_id)
+        if not rest_user:
+            # The user has no pending challenge
+            kick_user(context, chat_id, user_id, reason="explicitly kicked")
+            sto_msgs: List[Tuple[int, int, int]] = context.chat_data.get('stored_messages', list())
+            msgids_to_delete: Set[int] = set([u_m_t[1] for u_m_t in sto_msgs if u_m_t[0] == user_id])
+            msgids_to_delete.add(repl_msg.message_id)
+            for _mid in msgids_to_delete:
+                delete_message(context, chat_id, _mid)
+        else:
+            # Remove old job first, then take action
+            mjobs: tuple = context.job_queue.get_jobs_by_name(challange_hash(rest_user.user_id, chat_id, rest_user.join_msgid))
+            if len(mjobs) == 1:
+                mjob: Job = mjobs[0]
+                mjob.schedule_removal()
+            else:
+                for mjob in mjobs:
+                    mjob.schedule_removal()
+                logger.error(f'There is {len(mjobs)} pending job(s) for {rest_user.user_id} in the group {chat_id}')
+                if DEBUG:
+                    try:
+                        raise Exception
+                    except Exception:
+                        print_traceback(debug=DEBUG)
+            # ban user
+            kick_user(context, chat_id, user_id, reason="explicitly kicked before challenge")
+            # delete join msg and challenge message
+            u_mgr.pop(rest_user.user_id)
+            if rest_user.flooding:
+                fldlock.acquire()
+                try:
+                    if len(u_mgr._fldusers) == 0 and u_mgr.fldmsg_id:
+                        delete_message(context, chat_id=chat_id, message_id=u_mgr.fldmsg_id)
+                        u_mgr.fldmsg_id = None
+                finally:
+                    fldlock.release()
+            else:
+                delete_message(context, chat_id=chat_id, message_id=rest_user.clg_msgid)
+            delete_message(context, chat_id=chat_id, message_id=rest_user.join_msgid)
+    def delete_notice(_: CallbackContext) -> None:
+        delete_message(context, chat_id=chat_id, message_id=update.message.message_id)
+    context.job_queue.run_once(delete_notice, 2)
+
+@run_async
+@collect_error
 def challenge_verification(update: Update, context: CallbackContext) -> None:
     bot: Bot = context.bot
     chat_id: int = update.callback_query.message.chat.id
@@ -295,12 +377,12 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
         logger.error('Empty Inline challenge data.')
         return
     args: List[str] = data.split()
-    if args and len(args) == 2:
+    if args and len(args) == 3:
         args.append('')
-    if not (args and len(args) == 3):
+    if not (args and len(args) == 4):
         logger.error(f'Wrong Inline challenge data length. {data}')
         return
-    (btn_callback, invite_ruid) = args[1:]
+    (btn_callback, invite_ruid) = args[2:] # args: ['clg', r_user_id, btn_callback, invite_ruid]
     # invite_ruid is '' if the restricted user is not a bot
     if invite_ruid:
         try:
@@ -371,12 +453,14 @@ def challenge_verification(update: Update, context: CallbackContext) -> None:
         if not captcha_corrent:
             if (kick_by_admin := not flooding and user.id in adminids):
                 bot.answer_callback_query(callback_query_id=update.callback_query.id,
-                                          text='Banned permanently',
+                                          text=f'Banned for {UNBAN_TIMEOUT} seconds' \
+                                            if (UNBAN_TIMEOUT := settings.get('UNBAN_TIMEOUT')) > 0 else \
+                                            'Banned permanently',
                                           show_alert=True)
             kick_user(context, chat_id, r_user_id, 'Kicked by admin' if kick_by_admin else 'Challange failed')
             def then_unban(_: CallbackContext) -> None:
                 unban_user(context, chat_id, r_user_id, reason='Unban timeout reached.')
-            if not kick_by_admin and (UNBAN_TIMEOUT := settings.get('UNBAN_TIMEOUT')) > 0:
+            if (UNBAN_TIMEOUT := settings.get('UNBAN_TIMEOUT')) > 0:
                 context.job_queue.run_once(then_unban, UNBAN_TIMEOUT, name='unban_job')
         else:
             unban_user(context, chat_id, r_user_id, reason='Challenge passed.')
@@ -452,10 +536,10 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                     delete_message(context, chat_id, u_mgr.fldmsg_id)
                 buttons = [
                     InlineKeyboardButton(text=CLG_ACCEPT, callback_data = (\
-                        f"clg {challenge_gen_pw(user.id, join_msgid)}" + \
+                        f"clg {user.id} {challenge_gen_pw(user.id, join_msgid)}" + \
                     (f" {user.id}" if not flag_flooding else ''))),
                     *[InlineKeyboardButton(text=fake_btn_text, callback_data = (\
-                        f"clg {challenge_gen_pw(user.id, join_msgid, real=False)}" + \
+                        f"clg {user.id} {challenge_gen_pw(user.id, join_msgid, real=False)}" + \
                     (f" {user.id}" if not flag_flooding else '')))
                     for fake_btn_text in CLG_DENY]
                 ]
@@ -483,7 +567,7 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                     u_mgr.fldmsg_id = msg.message_id
                     u_mgr.fldmsg_callbacks = callback_datalist
                 bot_invite_uid = None if flag_flooding else invite_user.id
-                u_mgr.add(restUser(user.id, join_msgid, bot_invite_uid, flooding=flag_flooding))
+                u_mgr.add(restUser(user.id, join_msgid, msg.message_id, bot_invite_uid, flooding=flag_flooding))
             finally:
                 if flag_flooding:
                     fldlock.release()
@@ -829,6 +913,7 @@ if __name__ == '__main__':
     updater.dispatcher.add_handler(CommandHandler('admin', at_admins))
     updater.dispatcher.add_handler(CommandHandler('settings', settings_menu))
     updater.dispatcher.add_handler(CommandHandler('cancel', settings_cancel))
+    updater.dispatcher.add_handler(CommandHandler('ban', ban_user))
     updater.dispatcher.add_handler(CallbackQueryHandler(challenge_verification, pattern=r'clg'))
     updater.dispatcher.add_handler(CallbackQueryHandler(settings_callback, pattern=r'settings'))
     updater.dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_members, new_members))

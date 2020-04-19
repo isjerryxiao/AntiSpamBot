@@ -46,8 +46,9 @@ def async_run(coro: myCoro, timeout: int = 8, retry: int = 10) -> Any:
         if mlock.acquire(timeout=timeout):
             return task
         else:
+            cancel = task.cancel()
             mlock.release()
-            logger.error(f"Timed out waiting for task {task}: {timeout} [{tries+1}/{retry}]")
+            logger.error(f"Timed out waiting for task {task}: {timeout} [{tries+1}/{retry}], {cancel=}")
             return None
     while True:
         task = waitfor_task()
