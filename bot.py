@@ -3,9 +3,11 @@
 from typing import List, Any, Callable, Tuple, Set
 
 from config import (SALT, WORKERS, AT_ADMINS_RATELIMIT, STORE_CHAT_MESSAGES,
-                    GARBAGE_COLLECTION_INTERVAL, PICKLE_FILE,
-                    CHAT_SETTINGS as CHAT_SETTINGS_DEFAULT, CHAT_SETTINGS_HELP,
+                    GARBAGE_COLLECTION_INTERVAL, PICKLE_FILE, PERMIT_RELOAD,
                     USER_BOT_BACKEND, DEBUG)
+from chatsettings import CHAT_SETTINGS as CHAT_SETTINGS_DEFAULT, CHAT_SETTINGS_HELP
+from importlib import reload
+import userfilter
 assert not [k for k in CHAT_SETTINGS_DEFAULT if k not in CHAT_SETTINGS_HELP]
 
 import logging
@@ -118,6 +120,12 @@ def getAdminUsernames(bot: Bot, chat_id: int, markdown: bool = False) -> List[st
 @collect_error
 @filter_old_updates
 def start(update: Update, context: CallbackContext) -> None:
+    logger.debug(f"Start from {update.message.from_user.id}")
+    if update.message.chat.type == 'private' and update.effective_user.id in PERMIT_RELOAD:
+        reload(userfilter)
+        logger.info(f'[!] userfilter module reloaded by {update.effective_user.id}')
+        update.message.reply_text('reloaded')
+        return
     update.message.reply_text((f'你好{update.message.from_user.first_name}'
                                 '，机器人目前功能如下:\n'
                                 '1.新加群用户需要在一定时间内点击'
@@ -131,15 +139,14 @@ def start(update: Update, context: CallbackContext) -> None:
                                 '管理员可使用 /settings 自定义设置。\n'
                                 '使用 /ban 封禁用户。'),
                               isgroup=update.message.chat.type != 'private')
-    logger.debug(f"Start from {update.message.from_user.id}")
 
 @run_async
 @collect_error
 @filter_old_updates
 def source(update: Update, context: CallbackContext) -> None:
+    logger.debug(f"Source from {update.message.from_user.id}")
     update.message.reply_text(f'Source code: https://github.com/isjerryxiao/AntiSpamBot\nVersion: {VER}',
                               isgroup=update.message.chat.type != 'private')
-    logger.debug(f"Source from {update.message.from_user.id}")
 
 class chatSettings:
     def __init__(self, datadict):
@@ -179,11 +186,14 @@ class chatSettings:
         elif name in ('CHALLENGE_SUCCESS', 'PERMISSION_DENY'):
             uinput = [l[:30] for l in inputstr.split('\n') if l]
             self.__data[name] = uinput
-        elif name in ('CHALLENGE_TIMEOUT', 'UNBAN_TIMEOUT', 'FLOOD_LIMIT'):
+        elif name in ('CHALLENGE_TIMEOUT', 'MIN_CLG_TIME', 'UNBAN_TIMEOUT', 'FLOOD_LIMIT'):
             try:
                 seconds = int(inputstr)
                 if name == 'CHALLENGE_TIMEOUT':
                     if seconds > 3600 or seconds < 1:
+                        raise ValueError
+                elif name == 'MIN_CLG_TIME':
+                    if seconds < 0 or seconds > self.get('CHALLENGE_TIMEOUT'):
                         raise ValueError
                 elif name == 'UNBAN_TIMEOUT':
                     if seconds > 86400 or seconds < 0:
@@ -497,6 +507,15 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
     fldlock: Lock = FLD_LOCKS.setdefault(chat_id, Lock())
     u_mgr: UserManager = context.chat_data.setdefault('u_mgr', UserManager(chat_id))
     settings = chatSettings(context.chat_data.get('chat_settings', dict()))
+    MIN_CLG_TIME = settings.get('MIN_CLG_TIME')
+    CLG_TIMEOUT  = settings.get('CHALLENGE_TIMEOUT')
+    try:
+        RCLG_TIMEOUT = (lambda score: (userfilter.MAX_SCORE-score)/userfilter.MAX_SCORE*(CLG_TIMEOUT-MIN_CLG_TIME)) \
+                       (userfilter.spam_score(user.full_name))
+        RCLG_TIMEOUT = int(RCLG_TIMEOUT)
+    except Exception:
+        RCLG_TIMEOUT = CLG_TIMEOUT
+        print_traceback(debug=DEBUG)
     (CLG_QUESTION, CLG_ACCEPT, CLG_DENY) = settings.get_clg_accecpt_deny()
     # flooding protection
     FLOOD_LIMIT = settings.get('FLOOD_LIMIT')
@@ -555,7 +574,7 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                                         text=('' if not flag_flooding else \
                                                     f'待验证用户: {len(u_mgr)+1}名\n') + \
                                                 settings.choice('WELCOME_WORDS').replace(
-                                                '%time%', f"{settings.get('CHALLENGE_TIMEOUT')}") + \
+                                                '%time%', f"{RCLG_TIMEOUT}") + \
                                                 f"\n{CLG_QUESTION}",
                                         reply_markup=InlineKeyboardMarkup(buttons),
                                         disable_notification=True,
@@ -599,9 +618,8 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
                 else:
                     delete_message(context, chat_id=chat_id, message_id=msg.message_id)
                 delete_message(context, chat_id=chat_id, message_id=join_msgid)
-            if (CHALLENGE_TIMEOUT := settings.get('CHALLENGE_TIMEOUT')) > 0:
-                context.job_queue.run_once(kick_then_unban, CHALLENGE_TIMEOUT,
-                                           name=challange_hash(user.id, chat_id, join_msgid))
+            context.job_queue.run_once(kick_then_unban, RCLG_TIMEOUT if RCLG_TIMEOUT > 0 else 0,
+                                       name=challange_hash(user.id, chat_id, join_msgid))
         else:
             raise TelegramError('')
     except TelegramError:
