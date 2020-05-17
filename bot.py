@@ -510,7 +510,8 @@ def simple_challenge(context, chat_id, user, invite_user, join_msgid) -> None:
     MIN_CLG_TIME = settings.get('MIN_CLG_TIME')
     CLG_TIMEOUT  = settings.get('CHALLENGE_TIMEOUT')
     try:
-        RCLG_TIMEOUT = (lambda score: (userfilter.MAX_SCORE-score)/userfilter.MAX_SCORE*(CLG_TIMEOUT-MIN_CLG_TIME)) \
+        RCLG_TIMEOUT = (lambda score: \
+                        (userfilter.MAX_SCORE-score)/userfilter.MAX_SCORE*(CLG_TIMEOUT-MIN_CLG_TIME)+MIN_CLG_TIME) \
                        (userfilter.spam_score(user.full_name))
         RCLG_TIMEOUT = int(RCLG_TIMEOUT)
     except Exception:
