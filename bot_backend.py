@@ -61,6 +61,7 @@ def retry_on_network_error(func: Callable) -> Callable:
         else:
             logger.warning(f"Aborting, failed {t+1} times in {func.__name__}")
             return False
+    return wrapped
 
 @retry_on_network_error
 def restrict_user(context: CallbackContext, chat_id: int, user_id: int, extra: str = '') -> bool:
