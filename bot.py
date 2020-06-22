@@ -76,7 +76,7 @@ def filter_old_updates(func: Callable[[Update, CallbackContext], Callable]) -> C
     def wrapped(update: Update, context: CallbackContext, *args, **kwargs) -> Any:
         msg: Message = update.effective_message
         sent_time: datetime = msg.edit_date if msg.edit_date else msg.date
-        seconds_from_now: float = (datetime.utcnow() - sent_time).total_seconds()
+        seconds_from_now: float = (datetime.now(tz=sent_time.tzinfo) - sent_time).total_seconds()
         if int(seconds_from_now) > 5*60:
             logger.warning(f'Not processing update {update.update_id} since it\'s too old ({int(seconds_from_now)}).')
             return
@@ -207,6 +207,8 @@ class chatSettings:
                 return False
             else:
                 self.__data[name] = seconds
+        elif name in ('DEL_LEAVE_MSG',):
+            self.__data[name] = not self.get(name)
         else:
             raise NotImplementedError(f"{name} is unknown")
         return name
@@ -750,13 +752,15 @@ def settings_callback(update: Update, context: CallbackContext) -> None:
                 update.callback_query.answer(f'Unexpected {args[1]}')
                 return
             item = args[1]
+            setting_type: str = CHAT_SETTINGS_HELP.get(item)[2]
             settings = chatSettings(context.chat_data.get('chat_settings', dict()))
-            helptext = f"设置项: {CHAT_SETTINGS_HELP.get(item, [item, None])[0]}\n"
+            helptext = f"设置项: {CHAT_SETTINGS_HELP.get(item)[0]}\n"
             helptext += "当前设置: "
             current_value = settings.get(item)
             buttons = [[InlineKeyboardButton(text="恢复默认", callback_data = f"{' '.join(args[:2])} default")]]
             # handle default
             if len(args) == 3 and args[2] == 'default':
+                callback_answered = True
                 if settings.put(item, ''):
                     context.chat_data['chat_settings'] = settings.to_dict()
                     ppersistence.flush()
@@ -766,7 +770,8 @@ def settings_callback(update: Update, context: CallbackContext) -> None:
                     current_value = settings.get(item)
                 else:
                     update.callback_query.answer('失败', show_alert=True)
-            if item == 'CLG_QUESTIONS':
+            if setting_type == "array":
+                assert item == 'CLG_QUESTIONS'
                 # handle delete
                 if len(args) == 3 and args[2] not in ('set', 'default'):
                     try:
@@ -796,21 +801,42 @@ def settings_callback(update: Update, context: CallbackContext) -> None:
                     helptext += f"\n问题{i+1: >2d} :{name}\n正确答案: {corr_answ}"
                     for f in fals_answ:
                         helptext += f"\n错误答案: {f}"
-            else:
+            elif setting_type == "bool":
+                buttons += [[InlineKeyboardButton(text="切换状态", callback_data = f"{' '.join(args[:2])} set")]]
+                helptext += f"\n状态: {'已启用' if current_value else '已禁用'}"
+            elif setting_type in ("str", "int"):
                 buttons += [[InlineKeyboardButton(text="更改", callback_data = f"{' '.join(args[:2])} set")]]
                 if type(current_value) is list:
                     current_value = '\n'.join([f"备选项: {x}" for x in current_value])
                     helptext += '\n'
                 helptext += str(current_value)
+            else:
+                raise RuntimeError("should not reach here")
             buttons.append(
                 [InlineKeyboardButton(text='返回', callback_data='settings')]
             )
             helptext += '\n\n'
             helptext += f"设置说明:\n{CHAT_SETTINGS_HELP.get(item, [None, None])[1]}"
             if len(args) == 3 and args[2] == 'set':
-                helptext += "\n\n您正在设置新选项\n请在120秒内回复格式正确的内容，/cancel 取消设置。"
-                context.chat_data['settings_call'] = [time(), user.id, item]
-                reply_markup = None
+                if setting_type == "bool":
+                    callback_answered = True
+                    if settings.put(item, 'dummy'):
+                        context.chat_data['chat_settings'] = settings.to_dict()
+                        ppersistence.flush()
+                        update.callback_query.answer('成功', show_alert=True)
+                        # refresh
+                        settings = chatSettings(context.chat_data.get('chat_settings', dict()))
+                        current_value = settings.get(item)
+                        newhelptext = f"状态: {'已启用' if current_value else '已禁用'}"
+                        l_helptext = [newhelptext if line.startswith('状态:') else line for line in helptext.split('\n')]
+                        helptext = '\n'.join(l_helptext)
+                    else:
+                        update.callback_query.answer('失败', show_alert=True)
+                    reply_markup = InlineKeyboardMarkup(buttons)
+                else:
+                    helptext += "\n\n您正在设置新选项\n请在120秒内回复格式正确的内容，/cancel 取消设置。"
+                    context.chat_data['settings_call'] = [time(), user.id, item]
+                    reply_markup = None
             else:
                 reply_markup = InlineKeyboardMarkup(buttons)
             if not callback_answered:
@@ -838,6 +864,25 @@ def new_messages(update: Update, context: CallbackContext) -> None:
         sto_msgs.pop(0)
     if update.message and update.message.text:
         write_settings(update, context)
+
+@run_async
+@collect_error
+@filter_old_updates
+def left_member(update: Update, context: CallbackContext) -> None:
+    if not (update.message and update.message.chat):
+        return
+    chat_type: str = update.message.chat.type
+    if chat_type in ('private', 'channel'):
+        return
+    chat_id: int = update.message.chat_id
+    msg_id: int = update.message.message_id
+    settings = chatSettings(context.chat_data.get('chat_settings', dict()))
+    DEL_LEAVE_MSG = settings.get('DEL_LEAVE_MSG')
+    if DEL_LEAVE_MSG:
+        logger.debug(f'Deleted left_member message {msg_id} for {chat_id}')
+        delete_message(context, chat_id, msg_id)
+    else:
+        logger.debug(f'Not deleting left_member message {msg_id} for {chat_id}')
 
 @run_async
 @collect_error
@@ -939,6 +984,7 @@ if __name__ == '__main__':
     updater.dispatcher.add_handler(CallbackQueryHandler(challenge_verification, pattern=r'clg'))
     updater.dispatcher.add_handler(CallbackQueryHandler(settings_callback, pattern=r'settings'))
     updater.dispatcher.add_handler(MessageHandler(Filters.status_update.new_chat_members, new_members))
+    updater.dispatcher.add_handler(MessageHandler(Filters.status_update.left_chat_member, left_member))
     updater.dispatcher.add_handler(MessageHandler(InvertedFilter(Filters.status_update & \
                                                   Filters.update.channel_posts), new_messages))
     if USER_BOT_BACKEND:
